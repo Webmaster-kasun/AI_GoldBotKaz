@@ -61,7 +61,7 @@ ASSETS = {
         "precision":     2,
         "min_atr":       8.0,
         "lot_size":      2,
-        "session_hours": [(5, 12), (14, 23), (0, 1)],   # Asian (5am-12pm) + London + NY
+        "session_hours": [(9, 23)],   # 9am–11pm SGT only
     },
 }
 
@@ -227,23 +227,23 @@ def run_bot():
     hour     = now.hour
 
     # ── SESSION DETECTION ─────────────────────────────────────
-    asian        = (5 <= hour <= 12)
+    # Trading hours: 9am–11pm SGT only
+    # Off hours:     11pm–9am SGT (bot sleeps)
+    active_hours = (9 <= hour <= 23)
     london_open  = (14 <= hour <= 17)
     london       = (14 <= hour <= 19)
     ny_overlap   = (20 <= hour <= 23)
-    late_ny      = (0 <= hour <= 1)
-    good_session = asian or london or ny_overlap or late_ny
+    asian        = (9 <= hour <= 13)    # SGX/Tokyo overlap window
+    good_session = active_hours
 
     if asian:
-        session = "Asian Session 🌏 (Gold breakout watch — SGX/Tokyo)"
+        session = "Asian Session 🌏 (SGX/Tokyo — 9am–1pm SGT)"
     elif london_open:
         session = "London Open 🔥 (BEST for Gold breakouts!)"
     elif ny_overlap:
         session = "NY Overlap 🔥 (BEST for Gold macro moves!)"
     elif london:
         session = "London Session 🇬🇧"
-    elif late_ny:
-        session = "NY Late Session 🇺🇸"
     else:
         session = "Off-hours (monitoring only)"
 
@@ -251,8 +251,8 @@ def run_bot():
     if now.weekday() == 5:
         log.info("Saturday — markets closed, skipping scan")
         return
-    if now.weekday() == 6 and hour < 5:
-        log.info("Sunday early — skipping scan")
+    if now.weekday() == 6 and hour < 9:
+        log.info("Sunday early — skipping scan, resumes 9am SGT")
         return
 
     # ── LOGIN ─────────────────────────────────────────────────
@@ -338,9 +338,9 @@ def run_bot():
     # ── CPR LEVELS ────────────────────────────────────────────
     cpr_gold = cpr_calc.get_levels("XAU_USD")
 
-    # Send CPR alert at Asian open (5am SGT) and London open (2pm SGT)
+    # Send CPR alert at 9am SGT (session open) and 2pm SGT (London open)
     send_cpr_alert = (
-        (asian and hour == 5 and not today.get("cpr_alert_asian_sent")) or
+        (asian and hour == 9 and not today.get("cpr_alert_asian_sent")) or
         (london_open and hour == 14 and not today.get("cpr_alert_sent"))
     )
     if send_cpr_alert:
@@ -367,25 +367,9 @@ def run_bot():
         with open(trade_log, "w") as f:
             json.dump(today, f, indent=2)
 
-    # ── OFF-HOURS MONITORING ──────────────────────────────────
+    # ── OFF-HOURS: silent return — no Telegram, no API calls ────
     if not good_session:
-        open_positions = []
-        for name, config in ASSETS.items():
-            pos = trader.get_position(name)
-            if pos:
-                pnl       = trader.check_pnl(pos)
-                direction = "BUY" if int(float(pos["long"]["units"])) > 0 else "SELL"
-                open_positions.append(config["emoji"] + " " + name + ": " + direction + " $" + str(round(pnl, 2)))
-
-        positions_str = "\n".join(open_positions) if open_positions else "No open trades"
-        alert.send(
-            "🥇 GOLD BOT Off-hours\n"
-            "Time: " + now.strftime("%H:%M SGT") + "\n"
-            "Balance: $" + str(round(current_balance, 2)) + "\n"
-            "Realized: $" + str(round(realized_pnl, 2)) + " USD " + pnl_emoji + "\n"
-            "Gold trading: 5am-12pm SGT (Asian) + 2pm-11pm SGT (London/NY)\n"
-            "---\n" + positions_str
-        )
+        log.info("Off-hours (11pm–9am SGT) — sleeping silently")
         return
 
     # ── BREAKEVEN MANAGEMENT ──────────────────────────────────
