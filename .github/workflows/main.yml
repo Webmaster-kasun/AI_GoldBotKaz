@@ -1,28 +1,39 @@
-name: OANDA Hybrid CPR + Breakout Bot
+name: OANDA Gold CPR Bot
 
 on:
   schedule:
-    - cron: "*/5 21-23 * * 0"   # Sunday UTC (Mon SGT market open)
-    - cron: "*/5 * * * 1-4"     # Mon–Thu all day UTC
-    - cron: "*/5 0-21 * * 5"    # Friday until market close
-  workflow_dispatch:             # Manual trigger anytime
+    # ── ASIAN SESSION: 5am–12pm SGT = 9pm–4am UTC ──
+    - cron: "*/10 21-23 * * 0"    # Sunday UTC (Mon 5am–7am SGT)
+    - cron: "*/10 0-4 * * 1-5"    # Mon–Fri 12am–4am UTC (8am–12pm SGT)
+    - cron: "*/10 21-23 * * 1-4"  # Mon–Thu 9pm–11pm UTC (5am–7am SGT)
+
+    # ── LONDON SESSION: 2pm–7pm SGT = 6am–11am UTC ──
+    - cron: "*/10 6-11 * * 1-5"   # Mon–Fri 6am–11am UTC
+
+    # ── NY OVERLAP: 8pm–11pm SGT = 12pm–3pm UTC ──
+    - cron: "*/10 12-15 * * 1-5"  # Mon–Fri 12pm–3pm UTC
+
+  workflow_dispatch:               # Manual trigger anytime
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   trade:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.4.0
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Hybrid CPR Bot
+      - name: Run Gold CPR Bot
         env:
           OANDA_API_KEY:    ${{ secrets.OANDA_API_KEY }}
           OANDA_ACCOUNT_ID: ${{ secrets.OANDA_ACCOUNT_ID }}
@@ -32,9 +43,9 @@ jobs:
 
       - name: Save logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
-          name: hybrid-logs-${{ github.run_number }}
+          name: gold-logs-${{ github.run_number }}
           path: |
             trades_*.json
             performance_log.txt
