@@ -120,27 +120,32 @@ def sync_closed_trades(trader, today, trade_log):
             elif pl < 0:
                 losses += 1
 
-        if trade_count > 0:
-            today["trades"]        = trade_count
-            today["wins"]          = wins
-            today["losses"]        = losses
-            today["consec_losses"] = 0  # recalc below
-            # Recalc consec losses from last trades
-            consec = 0
-            for t in sorted(trades, key=lambda x: x.get("closeTime", ""), reverse=True):
-                close_time = t.get("closeTime", "")
-                if close_time < day_start_utc:
-                    break
-                pl = float(t.get("realizedPL", 0))
-                if pl < 0:
-                    consec += 1
-                else:
-                    break
-            today["consec_losses"] = consec
-            with open(trade_log, "w") as f:
-                import json
-                json.dump(today, f, indent=2)
-            log.info("Synced " + str(trade_count) + " closed trades: W=" + str(wins) + " L=" + str(losses))
+        # Update W/L only — trade count uses open+closed to avoid resetting
+        today["wins"]   = wins
+        today["losses"] = losses
+        # Also count open trades
+        import requests as _req
+        open_url = trader.base_url + "/v3/accounts/" + trader.account_id + "/openTrades"
+        or_ = _req.get(open_url, headers=trader.headers, timeout=10)
+        open_count = len(or_.json().get("trades", [])) if or_.status_code == 200 else 0
+        today["trades"] = trade_count + open_count
+
+        # Recalc consec losses from most recent closed trades
+        consec = 0
+        for t in sorted(trades, key=lambda x: x.get("closeTime", ""), reverse=True):
+            close_time = t.get("closeTime", "")
+            if close_time < day_start_utc:
+                break
+            pl = float(t.get("realizedPL", 0))
+            if pl < 0:
+                consec += 1
+            else:
+                break
+        today["consec_losses"] = consec
+        with open(trade_log, "w") as f:
+            import json
+            json.dump(today, f, indent=2)
+        log.info("Synced " + str(trade_count + open_count) + " trades (closed=" + str(trade_count) + " open=" + str(open_count) + ") W=" + str(wins) + " L=" + str(losses))
     except Exception as e:
         log.warning("Sync trades error: " + str(e))
 
@@ -500,7 +505,7 @@ def run_bot():
 
         # ── SIGNAL ANALYSIS — always run even if spread wide ──
         asset_key = "XAUUSD_ASIAN" if is_asian_gold else config["asset"]
-        threshold = settings.get("signal_threshold_asian", 3) if is_asian_gold else settings["signal_threshold"]
+        threshold = settings.get("signal_threshold_asian", 2) if is_asian_gold else settings["signal_threshold"]
 
         score, direction, details = signals.analyze(asset=asset_key)
         log.info(name + ": score=" + str(score) + " dir=" + direction + " | " + details)
