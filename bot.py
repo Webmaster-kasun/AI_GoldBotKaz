@@ -568,33 +568,33 @@ def run_bot():
     else:
         target_msg = "Scanning for setups..."
 
-    summary    = "\n".join(scan_results) if scan_results else "No setups this scan"
-    wins       = today.get("wins", 0)
-    losses     = today.get("losses", 0)
-    consec     = today.get("consec_losses", 0)
-    cpr_status = ""
+    summary = "\n".join(scan_results) if scan_results else "No setups this scan"
+    wins    = today.get("wins", 0)
+    losses  = today.get("losses", 0)
+    consec  = today.get("consec_losses", 0)
+
+    # CPR summary line — friend-style format
+    cpr_line = ""
     if cpr_gold:
-        cpr_status += (
-            "🥇 CPR Width=" + str(cpr_gold["width_pct"]) + "% " +
-            ("⚡ NARROW" if cpr_gold["is_narrow"] else ("⚠️ WIDE" if cpr_gold["is_wide"] else "NORMAL")) + "\n"
+        width_flag = " ⚡NARROW" if cpr_gold["is_narrow"] else (" ⚠️WIDE" if cpr_gold["is_wide"] else "")
+        cpr_line = (
+            "CPR Width: " + str(cpr_gold["width_pct"]) + "%" + width_flag + " | 1% risk\n"
+            "CPR TC=" + str(cpr_gold["tc"]) + " BC=" + str(cpr_gold["bc"]) + "\n"
+            "R1=" + str(cpr_gold["r1"]) + " S1=" + str(cpr_gold["s1"]) + "\n"
         )
+
+    threshold_used = settings.get("signal_threshold_asian", 2) if asian else settings["signal_threshold"]
 
     alert.send(
         "🥇 GOLD BOT Scan! " + mode + "\n"
-        "Strategy: CPR + Breakout Momentum\n"
-        "Time:     " + now.strftime("%H:%M SGT") + "\n"
-        "Session:  " + session + "\n"
-        "Balance:  $" + str(round(current_balance, 2)) + "\n"
-        "Start:    $" + str(round(start_balance, 2)) + "\n"
-        "Realized: $" + str(round(realized_pnl, 2)) + " USD " + pnl_emoji + "\n"
-        "= $" + str(round(pl_sgd, 2)) + " SGD\n"
-        "Open PnL: $" + str(round(open_pnl, 2)) + " USD\n"
-        "Total:    $" + str(round(total_pnl, 2)) + " USD\n"
+        "Time: " + now.strftime("%H:%M SGT") + " | " + session + "\n"
+        "Balance: $" + str(round(current_balance, 2)) +
+        " | Realized: $" + str(round(realized_pnl, 2)) + " " + pnl_emoji + "\n"
+        "Trades: " + str(today["trades"]) + "/" + str(settings["max_trades_day"]) +
+        " | W/L: " + str(wins) + "/" + str(losses) + "\n"
         + target_msg + "\n"
-        "Trades: " + str(today["trades"]) + "/" + str(settings["max_trades_day"]) + "\n"
-        "W/L: " + str(wins) + "/" + str(losses) + " | Consec loss: " + str(consec) + "\n"
-        "─── CPR ───\n"
-        + cpr_status +
+        "─────────────────────────\n"
+        + cpr_line +
         "─── Setups ───\n"
         + summary
     )
