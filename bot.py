@@ -1,21 +1,19 @@
 """
-OANDA Trading Bot — Gold Only | Hybrid CPR + Breakout Momentum
-===============================================================
-Strategy: CPR bias (Layer 1) + Breakout (Layer 2) + Macro (Layer 3)
-          + EMA trend (Layer 4) + RSI/MACD momentum (Layer 5)
+OANDA Trading Bot — Gold Only | CPR + EMA + Volume
+===================================================
+Strategy: CPR position (Check 1) + EMA alignment (Check 2)
+          + Volume confirmation (Check 3) + PDH/PDL (Check 4)
 
-Scoring:  4/8 pts minimum (London/NY) | 3/8 pts minimum (Asian)
+Scoring:  3/5 pts minimum (London/NY) | 2/5 pts minimum (Asian)
 Pair:     XAU/USD (Gold only)
-Sessions: Asian (5am-12pm SGT) + London (2pm-7pm SGT) + NY Overlap (8pm-11pm SGT)
+Sessions: Asian (9am-1pm SGT) + London (2pm-7pm SGT) + NY Overlap (8pm-11pm SGT)
 
-  ✅ CPR daily levels as primary bias filter
+  ✅ CPR position sets direction (above TC=BUY, below BC=SELL)
+  ✅ EMA20/EMA50 alignment confirms trend
+  ✅ Volume ratio confirms real move (1.2x average)
+  ✅ PDH/PDL adds confluence
   ✅ CPR R1/S1 used as TP targets (dynamic)
   ✅ Breakeven stop management (locks profit at 1x ATR)
-  ✅ Narrow CPR alert at session open
-  ✅ Wide CPR = reduced position size (50% on choppy days)
-  ✅ Asian session: EMA conflict = watch mode (Telegram alert)
-  ✅ Asian session: PDH/PDL breakout as Layer 3
-  ✅ 5-layer score shown in every Telegram message
   ✅ Runs every 5 minutes via Railway loop
 """
 
@@ -70,8 +68,8 @@ def load_settings():
     default = {
         "max_trades_day":         5,
         "max_daily_loss":         40.0,
-        "signal_threshold":       4,       # 4/8 pts minimum (London/NY)
-        "signal_threshold_asian": 3,       # 3/8 pts minimum (Asian)
+        "signal_threshold":       3,       # 3/5 pts minimum (London/NY)
+        "signal_threshold_asian": 2,       # 2/5 pts minimum (Asian)
         "demo_mode":              True,
         "trade_gold":             True,
         "trade_gold_asian":       True,
@@ -457,12 +455,12 @@ def run_bot():
         if is_asian_gold and score >= 2 and direction == "NONE":
             scan_results.append(
                 config["emoji"] + " " + name + ": ⏳ Watching for breakout (" +
-                str(score) + "/8)"
+                str(score) + "/5)"
             )
             cpr_lvls  = cpr_calc.get_levels("XAU_USD")
             watch_msg = (
                 "⏳ GOLD Asian Session — Watching for Breakout\n"
-                "Score: " + str(score) + "/8 — need " + str(threshold) + " to trade\n"
+                "Score: " + str(score) + "/5 — need " + str(threshold) + " to trade\n"
                 "CPR Width: "
             )
             if cpr_lvls:
@@ -479,7 +477,7 @@ def run_bot():
 
         if score < threshold or direction == "NONE":
             scan_results.append(
-                config["emoji"] + " " + name + ": " + str(score) + "/8 — no setup yet"
+                config["emoji"] + " " + name + ": " + str(score) + "/5 — no setup yet"
             )
             continue
 
@@ -533,7 +531,7 @@ def run_bot():
                 + config["emoji"] + " " + name + "\n"
                 "Strategy: CPR + Breakout Momentum\n"
                 "Direction: " + direction + "\n"
-                "Score:    " + str(score) + "/8\n"
+                "Score:    " + str(score) + "/5\n"
                 "Entry:    " + str(round(price, config["precision"])) + "\n"
                 "Size:     " + str(size) + " units" + size_note + "\n"
                 "Stop:     " + str(stop_pips) + " pips = $" + str(max_loss) + "\n"
@@ -549,7 +547,7 @@ def run_bot():
             )
             scan_results.append(
                 config["emoji"] + " " + name + ": " +
-                direction + " PLACED! " + str(score) + "/8"
+                direction + " PLACED! " + str(score) + "/5"
             )
         else:
             set_cooldown(today, name)
