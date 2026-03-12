@@ -78,6 +78,11 @@ class CPRCalculator:
         pivot = (H + L + C) / 3
         bc    = (H + L) / 2
         tc    = (pivot - bc) + pivot
+
+        # Always ensure TC is the upper band, BC is the lower band
+        # When close < midpoint, raw tc < bc — swap to keep display consistent
+        if tc < bc:
+            tc, bc = bc, tc
         r1    = (2 * pivot) - L
         s1    = (2 * pivot) - H
         r2    = pivot + (H - L)
