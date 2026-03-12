@@ -86,6 +86,65 @@ def load_settings():
     return default
 
 
+def sync_closed_trades(trader, today, trade_log):
+    """Pull today's closed trades from OANDA and update W/L counts."""
+    try:
+        import pytz
+        from datetime import datetime
+        sg_tz    = pytz.timezone("Asia/Singapore")
+        now_sg   = datetime.now(sg_tz)
+        day_start = now_sg.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Convert to UTC RFC3339
+        from datetime import timezone, timedelta
+        day_start_utc = day_start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+
+        url    = trader.base_url + "/v3/accounts/" + trader.account_id + "/trades"
+        params = {"state": "CLOSED", "instrument": "XAU_USD", "count": "20"}
+        import requests
+        r = requests.get(url, headers=trader.headers, params=params, timeout=10)
+        if r.status_code != 200:
+            return
+
+        trades = r.json().get("trades", [])
+        wins = 0
+        losses = 0
+        trade_count = 0
+        for t in trades:
+            close_time = t.get("closeTime", "")
+            if close_time < day_start_utc:
+                continue  # Before today
+            trade_count += 1
+            pl = float(t.get("realizedPL", 0))
+            if pl > 0:
+                wins += 1
+            elif pl < 0:
+                losses += 1
+
+        if trade_count > 0:
+            today["trades"]        = trade_count
+            today["wins"]          = wins
+            today["losses"]        = losses
+            today["consec_losses"] = 0  # recalc below
+            # Recalc consec losses from last trades
+            consec = 0
+            for t in sorted(trades, key=lambda x: x.get("closeTime", ""), reverse=True):
+                close_time = t.get("closeTime", "")
+                if close_time < day_start_utc:
+                    break
+                pl = float(t.get("realizedPL", 0))
+                if pl < 0:
+                    consec += 1
+                else:
+                    break
+            today["consec_losses"] = consec
+            with open(trade_log, "w") as f:
+                import json
+                json.dump(today, f, indent=2)
+            log.info("Synced " + str(trade_count) + " closed trades: W=" + str(wins) + " L=" + str(losses))
+    except Exception as e:
+        log.warning("Sync trades error: " + str(e))
+
+
 def get_atr_pips(trader, instrument, pip, multiplier=1.0):
     """Get ATR in pips from H1 candles"""
     try:
@@ -568,6 +627,10 @@ def run_bot():
         target_msg = "Scanning for setups..."
 
     summary = "\n".join(scan_results) if scan_results else "No setups this scan"
+    # Sync wins/losses from realized PnL change
+    prev_balance = today.get("start_balance", current_balance)
+    if realized_pnl > 0 and today.get("wins", 0) == 0 and today.get("losses", 0) == 0:
+        pass  # No trades closed yet
     wins    = today.get("wins", 0)
     losses  = today.get("losses", 0)
     consec  = today.get("consec_losses", 0)
