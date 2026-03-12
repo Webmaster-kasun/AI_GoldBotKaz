@@ -432,9 +432,6 @@ def run_bot():
         else:
             max_spread = settings.get("max_spread_gold", 5)
         spread_ok, spread_val = check_spread(trader, name, max_spread, config["pip"])
-        if not spread_ok:
-            scan_results.append(config["emoji"] + " " + name + ": spread too wide — skip")
-            continue
 
         # News blackout
         news_active, news_reason = calendar.is_news_time(name)
@@ -442,12 +439,20 @@ def run_bot():
             scan_results.append(config["emoji"] + " " + name + ": PAUSED — " + news_reason)
             continue
 
-        # ── SIGNAL ANALYSIS ───────────────────────────────────
+        # ── SIGNAL ANALYSIS — always run even if spread wide ──
         asset_key = "XAUUSD_ASIAN" if is_asian_gold else config["asset"]
         threshold = settings.get("signal_threshold_asian", 3) if is_asian_gold else settings["signal_threshold"]
 
         score, direction, details = signals.analyze(asset=asset_key)
         log.info(name + ": score=" + str(score) + " dir=" + direction + " | " + details)
+
+        # Show score even if spread too wide — so user can see signal strength
+        if not spread_ok:
+            scan_results.append(
+                config["emoji"] + " " + name + ": ⚠️ Spread " + str(round(spread_val, 1)) +
+                " pips (too wide) | Score: " + str(score) + "/5 dir=" + direction
+            )
+            continue
 
         # Watching for breakout (Asian session)
         if is_asian_gold and score >= 2 and direction == "NONE":
