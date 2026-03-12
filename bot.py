@@ -53,13 +53,11 @@ ASSETS = {
         "asset":         "XAUUSD",
         "emoji":         "🥇",
         "setting":       "trade_gold",
-        "stop_pips":     800,
-        "tp_pips":       1600,
         "pip":           0.01,
         "precision":     2,
-        "min_atr":       8.0,
         "lot_size":      2,
         "session_hours": [(9, 23)],   # 9am–11pm SGT only
+        # SL/TP are ATR-based — see calculate_atr_sl_tp()
     },
 }
 
@@ -74,8 +72,8 @@ def load_settings():
         "trade_gold":             True,
         "trade_gold_asian":       True,
         "max_consec_losses":      2,
-        "max_spread_gold":        5,
-        "max_spread_gold_asian":  8,
+        "max_spread_gold":        15,      # Gold spread can be wide during sessions
+        "max_spread_gold_asian":  20,      # Asian session even wider
         "strategy":               "hybrid_cpr_breakout_gold",
     }
     try:
@@ -486,23 +484,21 @@ def run_bot():
         is_wide    = cpr_levels["is_wide"] if cpr_levels else False
         size       = config["lot_size"] // 2 if is_wide else config["lot_size"]
 
-        # ── TAKE PROFIT ───────────────────────────────────────
-        price, _, _        = trader.get_price(name)
-        cpr_tp_pips, _     = (cpr_calc.get_cpr_tp(config["instrument"], direction, price)
-                               if cpr_levels and price else (None, None))
-        atr_tp_pips        = get_atr_pips(trader, name, config["pip"], multiplier=2.0)
+        # ── ATR-BASED SL/TP (1:2 R:R always) ─────────────────
+        # SL = 1x ATR  |  TP = 2x ATR  →  always 1:2 R:R
+        # Limits: SL min 150 pips, max 500 pips (Gold safety)
+        price, _, _ = trader.get_price(name)
+        raw_atr     = get_atr_pips(trader, name, config["pip"], multiplier=1.0)
 
-        if cpr_tp_pips and atr_tp_pips:
-            tp_pips  = min(cpr_tp_pips, atr_tp_pips)
-            tp_label = "CPR R1/S1" if cpr_tp_pips < atr_tp_pips else "2x ATR"
-        elif cpr_tp_pips:
-            tp_pips, tp_label = cpr_tp_pips, "CPR R1/S1"
-        elif atr_tp_pips:
-            tp_pips, tp_label = atr_tp_pips, "2x ATR"
+        if raw_atr:
+            stop_pips = max(150, min(raw_atr, 500))   # clamp 150–500
+            tp_pips   = stop_pips * 2                  # always 1:2
+            tp_label  = "2x ATR (1:2 R:R)"
         else:
-            tp_pips, tp_label = config["tp_pips"], "Fixed"
+            stop_pips = 200   # fallback
+            tp_pips   = 400
+            tp_label  = "Fixed fallback (1:2 R:R)"
 
-        stop_pips  = config["stop_pips"]
         max_loss   = round(size * stop_pips * config["pip"], 2)
         max_profit = round(size * tp_pips   * config["pip"], 2)
 
@@ -590,6 +586,7 @@ def run_bot():
         " | Realized: $" + str(round(realized_pnl, 2)) + " " + pnl_emoji + "\n"
         "Trades: " + str(today["trades"]) + "/" + str(settings["max_trades_day"]) +
         " | W/L: " + str(wins) + "/" + str(losses) + "\n"
+        "Need: " + str(threshold_used) + "/5 to trade\n"
         + target_msg + "\n"
         "─────────────────────────\n"
         + cpr_line +
