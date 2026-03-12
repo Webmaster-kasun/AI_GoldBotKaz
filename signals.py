@@ -152,19 +152,20 @@ class SignalEngine:
 
         # ── CHECK 4: CPR WIDTH BONUS (0–1 pt) ─────────────────
         # Narrow CPR = trending day = higher confidence in breakout
-        # Wide CPR = choppy = skip bonus point
-        if cpr.get("is_narrow"):
+        # Use width_pct directly — more reliable than cached is_narrow flag
+        cpr_width = float(cpr.get("width_pct", 999))
+        if cpr_width < 0.3:
             score += 1
             reasons.append(
-                "✅ Narrow CPR=" + str(cpr["width_pct"]) + "% — trending day bonus (1 pt)"
+                "✅ Narrow CPR=" + str(cpr_width) + "% < 0.3% — trending day bonus (1 pt)"
             )
-        elif cpr.get("is_wide"):
+        elif cpr_width > 0.6:
             reasons.append(
-                "❌ Wide CPR=" + str(cpr["width_pct"]) + "% — choppy day, no bonus (0 pts)"
+                "❌ Wide CPR=" + str(cpr_width) + "% > 0.6% — choppy day, no bonus (0 pts)"
             )
         else:
             reasons.append(
-                "❌ Normal CPR=" + str(cpr["width_pct"]) + "% — no bonus (0 pts)"
+                "❌ Normal CPR=" + str(cpr_width) + "% — no bonus (0 pts)"
             )
 
         reasons.append("R1=" + str(r1) + " S1=" + str(s1))
@@ -252,12 +253,13 @@ class SignalEngine:
         else:
             reasons.append("❌ RSI: not enough data (0 pts)")
 
-        # CHECK 4: CPR Width bonus
-        if cpr.get("is_narrow"):
+        # CHECK 4: CPR Width bonus — use width_pct directly
+        cpr_width = float(cpr.get("width_pct", 999))
+        if cpr_width < 0.3:
             score += 1
-            reasons.append("✅ Narrow CPR=" + str(cpr["width_pct"]) + "% — trending (1 pt)")
+            reasons.append("✅ Narrow CPR=" + str(cpr_width) + "% — trending bonus (1 pt)")
         else:
-            reasons.append("❌ CPR=" + str(cpr["width_pct"]) + "% — no bonus (0 pts)")
+            reasons.append("❌ CPR=" + str(cpr_width) + "% — no bonus (0 pts)")
 
         reasons.append("R1=" + str(cpr["r1"]) + " S1=" + str(cpr["s1"]))
 
