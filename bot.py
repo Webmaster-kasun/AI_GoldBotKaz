@@ -392,10 +392,10 @@ def run_bot():
 
     consec = today.get("consec_losses", 0)
     if consec >= settings.get("max_consec_losses", 2):
-        # Apply 30min cooling period instead of stopping all day
+        # Apply 10min cooling period instead of stopping all day
         alert.send(
             "⚠️ GOLD BOT: " + str(consec) + " CONSECUTIVE LOSSES!\n"
-            "30 min cooling period activated.\n"
+            "10 min cooling period activated.\n"
             "Realized: $" + str(round(realized_pnl, 2)) + " USD\n"
             "Will resume after cooldown."
         )
