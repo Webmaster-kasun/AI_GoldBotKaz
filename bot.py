@@ -202,7 +202,7 @@ def is_in_cooldown(today, instrument):
     if instrument not in cooldowns:
         return False
     last_loss  = datetime.fromisoformat(cooldowns[instrument])
-    wait_until = last_loss + timedelta(minutes=45)
+    wait_until = last_loss + timedelta(minutes=10)
     now_utc    = datetime.utcnow()
     if now_utc < wait_until:
         mins = int((wait_until - now_utc).seconds / 60)
@@ -361,6 +361,18 @@ def run_bot():
     with open(trade_log, "w") as f:
         json.dump(today, f, indent=2)
 
+    # ── SYNC TRADES FROM OANDA ───────────────────────────────
+    sync_closed_trades(trader, today, trade_log)
+
+    # ── AUTO COOLDOWN AFTER LOSS ──────────────────────────────
+    # If last closed trade was a loss, ensure cooldown is active
+    if today.get("consec_losses", 0) > 0:
+        for _name in ASSETS:
+            if _name not in today.get("cooldowns", {}):
+                set_cooldown(today, _name)
+        with open(trade_log, "w") as f:
+            json.dump(today, f, indent=2)
+
     # ── RISK GUARDS ───────────────────────────────────────────
     if today.get("stopped"):
         log.info("Bot stopped for today — daily limit hit")
@@ -384,7 +396,7 @@ def run_bot():
         with open(trade_log, "w") as f:
             json.dump(today, f, indent=2)
         alert.send(
-            "⛔ GOLD BOT: 2 CONSECUTIVE LOSSES!\n"
+            "⛔ GOLD BOT: " + str(consec) + " CONSECUTIVE LOSSES!\n"
             "Capital protection activated!\n"
             "Realized: $" + str(round(realized_pnl, 2)) + " USD\n"
             "Resumes tomorrow!"
@@ -487,7 +499,7 @@ def run_bot():
 
         # Cooldown check
         if is_in_cooldown(today, name):
-            scan_results.append(config["emoji"] + " " + name + ": cooldown 45min")
+            scan_results.append(config["emoji"] + " " + name + ": cooldown 10min")
             continue
 
         # Spread check
@@ -584,6 +596,9 @@ def run_bot():
             today["trades"]           += 1
             today["consec_losses"]     = 0
             today["breakeven_" + name] = False
+            # Clear cooldown after a win — free to trade again
+            if "cooldowns" in today and name in today["cooldowns"]:
+                del today["cooldowns"][name]
             with open(trade_log, "w") as f:
                 json.dump(today, f, indent=2)
 
