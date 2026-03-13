@@ -364,15 +364,6 @@ def run_bot():
     # ── SYNC TRADES FROM OANDA ───────────────────────────────
     sync_closed_trades(trader, today, trade_log)
 
-    # ── AUTO COOLDOWN AFTER LOSS ──────────────────────────────
-    # If last closed trade was a loss, ensure cooldown is active
-    if today.get("consec_losses", 0) > 0:
-        for _name in ASSETS:
-            if _name not in today.get("cooldowns", {}):
-                set_cooldown(today, _name)
-        with open(trade_log, "w") as f:
-            json.dump(today, f, indent=2)
-
     # ── RISK GUARDS ───────────────────────────────────────────
     if today.get("stopped"):
         log.info("Bot stopped for today — daily limit hit")
@@ -390,21 +381,8 @@ def run_bot():
         )
         return
 
-    consec = today.get("consec_losses", 0)
-    if consec >= settings.get("max_consec_losses", 2):
-        # Apply 10min cooling period instead of stopping all day
-        alert.send(
-            "⚠️ GOLD BOT: " + str(consec) + " CONSECUTIVE LOSSES!\n"
-            "10 min cooling period activated.\n"
-            "Realized: $" + str(round(realized_pnl, 2)) + " USD\n"
-            "Will resume after cooldown."
-        )
-        for _n in ASSETS:
-            today.setdefault("cooldowns", {})[_n] = datetime.utcnow().isoformat()
-        today["consec_losses"] = 0  # reset after cooling period applied
-        with open(trade_log, "w") as f:
-            json.dump(today, f, indent=2)
-        return
+    # Consecutive loss guard removed — bot trades freely
+    # Protected by: daily loss limit + signal threshold + 10min cooldown after each loss
 
     if today["trades"] >= settings["max_trades_day"]:
         log.info("Max trades reached for today")
@@ -500,14 +478,7 @@ def run_bot():
             scan_results.append(config["emoji"] + " " + name + ": Asian session disabled")
             continue
 
-        # Cooldown check
-        if is_in_cooldown(today, name):
-            cooldowns = today.get("cooldowns", {})
-            last_loss = datetime.fromisoformat(cooldowns[name])
-            wait_until = last_loss + timedelta(minutes=10)
-            mins_left = max(1, int((wait_until - datetime.utcnow()).seconds / 60))
-            scan_results.append(config["emoji"] + " " + name + ": ⏳ cooldown " + str(mins_left) + "min left")
-            continue
+        # Cooldown removed — bot trades freely based on signals
 
         # Spread check
         if is_asian_gold:
