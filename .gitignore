@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.log
+secrets.json
+.env
+
+# Railway files (not used on GitHub Actions)
+Procfile
+railway.json
+
+# Database binary (too large for git — cached via actions/cache)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Old-style trade logs from Hybrid strategy
+trades_*.json
+performance_log.txt
