@@ -75,6 +75,8 @@ def load_settings():
         "max_spread_gold":        999,     # demo spreads are wide
         "max_spread_gold_asian":  999,
         "strategy":               "hybrid_cpr_breakout_gold",
+        "max_trades_asian":       2,
+        "max_trades_main":        3,
     }
     try:
         with open("settings.json") as f:
@@ -278,6 +280,8 @@ def run_bot():
             "last_trade_close_time":  None,
             "last_trade_close_result": None,
             "last_trade_entry_price":  None,
+            "asian_trades_today":      0,
+            "main_trades_today":       0,
         }
         with open(trade_log, "w") as f:
             json.dump(today, f, indent=2)
@@ -410,6 +414,28 @@ def run_bot():
             scan_results.append(config["emoji"] + " " + name + ": Asian session disabled")
             continue
 
+        # ── SESSION WINDOW CAPS ───────────────────────────────
+        # Asian: max 2 trades (slower, less reliable session)
+        # London/NY: max 3 trades per session (peak hours)
+        wins_today   = today.get("wins", 0)
+        losses_today = today.get("losses", 0)
+        trades_today = wins_today + losses_today
+        if is_asian_gold:
+            window_cap = settings.get("max_trades_asian", 2)
+            # Count Asian session trades from today log
+            asian_trades = today.get("asian_trades_today", 0)
+            if asian_trades >= window_cap:
+                scan_results.append(config["emoji"] + " " + name +
+                    ": ⏸️ Asian window cap reached (" + str(asian_trades) + "/" + str(window_cap) + ")")
+                continue
+        else:
+            window_cap   = settings.get("max_trades_main", 3)
+            main_trades  = today.get("main_trades_today", 0)
+            if main_trades >= window_cap:
+                scan_results.append(config["emoji"] + " " + name +
+                    ": ⏸️ Main window cap reached (" + str(main_trades) + "/" + str(window_cap) + ")")
+                continue
+
         # ── SMART RE-ENTRY GUARD ─────────────────────────────
         # Data from 32 trades proves:
         #   < 30 min gap  = 8% win rate  (LOSING)
@@ -511,28 +537,72 @@ def run_bot():
             )
             continue
 
-        # ── POSITION SIZING ───────────────────────────────────
+        # ── POSITION SIZING BY SCORE ─────────────────────────
+        # score >= 6/7 → full size (2 units)
+        # score  = 5/7 → half size (1 unit)
+        # score  < 5   → no trade (blocked by threshold already)
         cpr_levels = cpr_calc.get_levels(config["instrument"])
-        is_wide    = cpr_levels["is_wide"] if cpr_levels else False
-        size       = config["lot_size"] // 2 if is_wide else config["lot_size"]
+        if score >= 6:
+            size = config["lot_size"]           # 2 units — high confidence
+        else:
+            size = max(1, config["lot_size"] // 2)  # 1 unit — standard entry
+        log.info(name + " position size=" + str(size) + " units (score=" + str(score) + "/7)")
 
-        # ── ATR-BASED SL/TP (1:2 R:R always) ─────────────────
-        # SL = 1x ATR  |  TP = 2x ATR  →  always 1:2 R:R
-        # Limits: SL min 150 pips, max 500 pips (Gold safety)
+        # ── SL/TP CALCULATION ─────────────────────────────────
+        # SL: ATR-based 500–600p
+        # TP: Dynamic using CPR R1/S1 if in range, else fixed 1800p
+        # Min R:R = 1:2 enforced — skip trade if not met
         price, _, _ = trader.get_price(name)
         raw_atr     = get_atr_pips(trader, name, config["pip"], multiplier=1.0)
+        pip         = config["pip"]
 
-        if raw_atr:
-            stop_pips = max(500, min(raw_atr, 600))    # SL: 500–600p
-            tp_pips   = min(stop_pips * 3, 1800)        # TP: max 1800p always
-            tp_label  = "3x SL capped 1800p (1:3 R:R)"
-        else:
-            stop_pips = 600    # fallback
-            tp_pips   = 1800
-            tp_label  = "Fixed fallback (1:3 R:R)"
+        stop_pips = max(500, min(raw_atr, 600)) if raw_atr else 600
+        sl_usd    = round(size * stop_pips * pip, 2)
 
-        max_loss   = round(size * stop_pips * config["pip"], 2)
-        max_profit = round(size * tp_pips   * config["pip"], 2)
+        # Dynamic TP: try R1/S1 first, fall back to 1800p
+        tp_pips   = 1800
+        tp_label  = "Fixed 1800p (1:3 R:R)"
+        if cpr_levels and price:
+            r1  = cpr_levels.get("r1", 0)
+            s1  = cpr_levels.get("s1", 0)
+            target_level = r1 if direction == "BUY" else s1
+            if target_level and price:
+                level_dist_pips = abs(target_level - price) / pip
+                # Use R1/S1 if it gives at least 1:2 R:R and not too far
+                if stop_pips * 2 <= level_dist_pips <= stop_pips * 4:
+                    tp_pips  = int(level_dist_pips)
+                    tp_label = ("R1=" + str(r1) if direction == "BUY" else "S1=" + str(s1)) + " (dynamic)"
+                    log.info("Dynamic TP using level: " + str(target_level) + " dist=" + str(tp_pips) + "p")
+
+        # R:R guard — skip if less than 1:2
+        rr = tp_pips / stop_pips
+        if rr < 2.0:
+            scan_results.append(config["emoji"] + " " + name + ": 🚫 R:R=" + str(round(rr,1)) + " < 1:2 — skip")
+            log.info(name + " skipped — R:R " + str(round(rr,1)) + " below 1:2 minimum")
+            continue
+
+        max_loss   = round(size * stop_pips * pip, 2)
+        max_profit = round(size * tp_pips   * pip, 2)
+
+        # ── MARGIN CAP — prevent INSUFFICIENT_MARGIN rejections ─
+        try:
+            margin_url = trader.base_url + "/v3/accounts/" + trader.account_id
+            mr = requests.get(margin_url, headers=trader.headers, timeout=10)
+            if mr.status_code == 200:
+                acct             = mr.json().get("account", {})
+                margin_available = float(acct.get("marginAvailable", current_balance))
+                margin_rate      = 0.05   # Gold typical margin rate
+                safety           = 0.8    # use 80% of available margin
+                max_units        = int((margin_available * safety) / (price * margin_rate)) if price else size
+                if max_units < 1:
+                    scan_results.append(config["emoji"] + " " + name + ": 🚫 Insufficient margin")
+                    log.warning(name + " skipped — insufficient margin available=$" + str(round(margin_available,2)))
+                    continue
+                if size > max_units:
+                    log.warning(name + " size capped " + str(size) + "→" + str(max_units) + " (margin)")
+                    size = max_units
+        except Exception as _me:
+            log.warning("Margin cap check failed: " + str(_me))
 
         # ── PLACE ORDER ───────────────────────────────────────
         result = trader.place_order(
@@ -547,7 +617,12 @@ def run_bot():
             today["trades"]                  += 1
             today["consec_losses"]            = 0
             today["breakeven_" + name]        = False
-            today["last_trade_entry_price"]   = price   # save for zone check
+            today["last_trade_entry_price"]   = price
+            # Track per-session window counts
+            if is_asian_gold:
+                today["asian_trades_today"] = today.get("asian_trades_today", 0) + 1
+            else:
+                today["main_trades_today"]  = today.get("main_trades_today", 0) + 1
 
             with open(trade_log, "w") as f:
                 json.dump(today, f, indent=2)
@@ -622,15 +697,28 @@ def run_bot():
 
     threshold_used = settings.get("signal_threshold_asian", 2) if asian else settings["signal_threshold"]
 
-    # Send scan summary every 30 min OR instantly when trade placed
-    trade_just_placed = any("PLACED" in r for r in scan_results)
-    last_alert_min    = today.get("last_scan_alert_min", -31)
-    current_min       = now.hour * 60 + now.minute
-    mins_since_alert  = current_min - last_alert_min if current_min >= last_alert_min else current_min + 1440 - last_alert_min
-    should_alert      = trade_just_placed or mins_since_alert >= 30
+    # Send scan summary when:
+    #   1. Trade just placed (always)
+    #   2. Score or direction changed since last alert
+    #   3. Every 60 min as heartbeat (so you know bot is alive)
+    trade_just_placed  = any("PLACED" in r for r in scan_results)
+    last_alert_min     = today.get("last_scan_alert_min", -61)
+    last_alert_score   = today.get("last_alert_score", -1)
+    last_alert_dir     = today.get("last_alert_direction", "")
+    current_min        = now.hour * 60 + now.minute
+    mins_since_alert   = current_min - last_alert_min if current_min >= last_alert_min else current_min + 1440 - last_alert_min
+
+    # Get current score/direction for change detection
+    cur_score = score if "score" in dir() else -1
+    cur_dir   = direction if "direction" in dir() else ""
+
+    score_changed = (cur_score != last_alert_score or cur_dir != last_alert_dir)
+    should_alert  = trade_just_placed or score_changed or mins_since_alert >= 60
 
     if should_alert:
-        today["last_scan_alert_min"] = current_min
+        today["last_scan_alert_min"]    = current_min
+        today["last_alert_score"]       = cur_score
+        today["last_alert_direction"]   = cur_dir
         with open(trade_log, "w") as f:
             json.dump(today, f, indent=2)
         alert.send(
