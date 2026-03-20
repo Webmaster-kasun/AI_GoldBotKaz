@@ -1,61 +1,44 @@
-name: CPR Gold Bot V1.1 (DISABLED - Railway is primary runner)
-
-# GitHub Actions is DISABLED - Railway runs this bot 24/7
-# Only enable workflow_dispatch if you want to run manually for testing
+name: OANDA Gold CPR Bot
 
 on:
-  workflow_dispatch:   # Manual trigger only - NO automatic schedule
+  workflow_dispatch:  # Manual trigger only — Railway handles automatic scanning
+
+# FIX 9: Removed cron schedule.
+# Railway runs bot.py continuously with its own 5-min loop.
+# Cron here caused 4-6 duplicate bots running simultaneously,
+# all hitting OANDA API and causing rate limit / key revocation.
 
 jobs:
   trade:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.4.0
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore persisted state
-        uses: actions/cache@v4
-        with:
-          path: |
-            data/trade_history.json
-            data/trade_history_archive.json
-            data/score_cache.json
-            data/runtime_state.json
-            data/calendar_cache.json
-            data/cpr_gold.db
-          key: gold-state-${{ github.run_id }}
-          restore-keys: |
-            gold-state-
-
-      - name: Run bot
+      - name: Run Gold CPR Bot (single scan)
         env:
           OANDA_API_KEY:    ${{ secrets.OANDA_API_KEY }}
           OANDA_ACCOUNT_ID: ${{ secrets.OANDA_ACCOUNT_ID }}
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          DATA_DIR:         ${{ github.workspace }}/data
         run: python bot.py
 
-      - name: Save persisted state
+      - name: Save logs
         if: always()
-        uses: actions/cache@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
+          name: gold-logs-${{ github.run_number }}
           path: |
-            data/trade_history.json
-            data/trade_history_archive.json
-            data/score_cache.json
-            data/runtime_state.json
-            data/calendar_cache.json
-            data/cpr_gold.db
-          key: gold-state-${{ github.run_id }}
+            trades_*.json
+            performance_log.txt
+          retention-days: 7
