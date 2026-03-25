@@ -70,18 +70,20 @@ def _call_claude(prompt: str) -> str:
 
 
 def _build_prompt(
-    direction:       str,
-    score:           int,
-    price:           float,
-    signal_details:  str,
-    wins_today:      int,
-    losses_today:    int,
-    last_loss_price: float,
-    last_loss_dir:   str,
-    recent_candles:  list,
-    session:         str,
-    h4_trend:        str,
-    is_asian:        bool,
+    direction:           str,
+    score:               int,
+    price:               float,
+    signal_details:      str,
+    wins_today:          int,
+    losses_today:        int,
+    last_loss_entry:     float,
+    last_loss_exit:      float,
+    last_loss_dir:       str,
+    last_win_exit:       float,
+    recent_candles:      list,
+    session:             str,
+    h4_trend:            str,
+    is_asian:            bool,
 ) -> str:
     """Build the reasoning prompt for Claude."""
 
@@ -93,51 +95,72 @@ def _build_prompt(
             directions.append("UP" if move > 0 else "DOWN")
         candle_summary = " -> ".join(directions)
 
+    # --- FIX 3: Use actual SL exit price for loss zone, not entry ---
     last_loss_info = "None today"
-    if last_loss_price and last_loss_dir:
-        price_gap = abs(price - last_loss_price) / 0.01
+    if last_loss_exit and last_loss_dir:
+        dist_from_exit  = abs(price - last_loss_exit) / 0.01
+        dist_from_entry = abs(price - last_loss_entry) / 0.01 if last_loss_entry else 0
         last_loss_info = (
-            last_loss_dir + " at " + str(last_loss_price) +
-            " (current price is " + str(round(price_gap)) + " pips away)"
+            "Last loss was " + last_loss_dir +
+            " | entry=$" + str(last_loss_entry) +
+            " | SL hit at=$" + str(last_loss_exit) +
+            " | current price is " + str(round(dist_from_exit)) + "p from SL zone" +
+            " and " + str(round(dist_from_entry)) + "p from loss entry"
         )
 
-    prompt = """You are a senior gold (XAU/USD) day trader reviewing a trade signal before it is placed.
+    # --- FIX 1: Chase detection — warn if new entry is far above last win exit ---
+    chase_warning = ""
+    if last_win_exit and last_win_exit > 0:
+        chase_pips = (price - last_win_exit) / 0.01
+        if direction == "BUY" and chase_pips > 200:
+            chase_warning = (
+                "\n⚠️ CHASE RISK: Entry price $" + str(price) +
+                " is " + str(round(chase_pips)) + "p above last WIN exit $" + str(last_win_exit) +
+                ". Price may be extended — do NOT approve just because the signal scored."
+            )
+        elif direction == "SELL" and chase_pips < -200:
+            chase_warning = (
+                "\n⚠️ CHASE RISK: Entry price $" + str(price) +
+                " is " + str(round(abs(chase_pips))) + "p below last WIN exit $" + str(last_win_exit) +
+                ". Price may be extended — do NOT approve just because the signal scored."
+            )
+
+    # --- FIX 2: Remove "only block if CLEAR reason" bias, make AI genuinely protective ---
+    prompt = """You are a senior gold (XAU/USD) risk manager reviewing a trade signal.
 You must respond ONLY with a single valid JSON object, no explanation, no markdown.
 
 TRADER PROFILE:
-- Day trader targeting 5-8 trades per day on XAU/USD
-- Demo account collecting data and learning
+- Day trader on XAU/USD, demo account, learning the strategy
 - Strategy: CPR breakout with H4 trend filter, EMA, RSI, ATR
-- Risk per trade: ~$10-15 USD, lot size 1-3 units
+- Risk per trade: ~$10-15 USD
 
 CURRENT SIGNAL:
 - Direction: """ + direction + """
 - Score: """ + str(score) + """/7
-- Entry price: """ + str(price) + """
+- Entry price: $""" + str(price) + """
 - Session: """ + session + """
 - H4 trend: """ + h4_trend + """
 - Is Asian session: """ + str(is_asian) + """
 - Signal details: """ + signal_details[:300] + """
 
 TODAY SO FAR:
-- Wins: """ + str(wins_today) + """
-- Losses: """ + str(losses_today) + """
-- Last loss: """ + last_loss_info + """
-- Recent H1 candle direction (oldest to newest): """ + (candle_summary if candle_summary else "unavailable") + """
+- Wins: """ + str(wins_today) + """ | Losses: """ + str(losses_today) + """
+- Last loss info: """ + last_loss_info + """
+- Recent H1 candles (oldest→newest): """ + (candle_summary if candle_summary else "unavailable") + """
+""" + chase_warning + """
 
-YOUR TASK:
-Decide if this trade should be placed. Consider:
-1. Is the signal direction aligned with recent candle momentum?
-2. Is price re-entering the same zone as a recent loss?
-3. Does H4 trend support this direction?
-4. Is it reasonable to take another trade given today's win/loss count?
-5. Remember: the trader WANTS to trade (5-8 per day). Only block if there is a CLEAR reason.
+YOUR TASK — be a strict risk manager, NOT a trade promoter:
+1. Is this entry chasing price far above/below the last exit? → block if chase_pips > 300
+2. Is this the same direction as the last loss AND price is back in the same zone? → block
+3. Do recent H1 candles oppose the signal direction? → reduce confidence
+4. Is H4 trend aligned? → required for HIGH confidence
+5. Are losses today >= 2? → require score 6/7+ to approve, otherwise block
 
 Respond with ONLY this JSON (no other text):
 {
   "decision": "YES" or "NO",
   "confidence": "HIGH" or "MEDIUM" or "LOW",
-  "reason": "one sentence explanation max 20 words",
+  "reason": "one sentence max 20 words",
   "lot_multiplier": 1 or 2 or 3
 }
 
@@ -145,7 +168,8 @@ Rules for lot_multiplier:
 - 3 only if decision=YES and confidence=HIGH and score=7
 - 2 only if decision=YES and confidence=HIGH and score>=6
 - 1 for all other YES decisions
-- 1 for NO decisions (will be ignored anyway)"""
+- 1 for NO decisions (ignored anyway)
+- If chase_warning is present: lot_multiplier max = 1"""
 
     return prompt
 
@@ -157,8 +181,10 @@ def ai_should_trade(
     signal_details:  str,
     wins_today:      int,
     losses_today:    int,
-    last_loss_price: float,
+    last_loss_entry: float,
+    last_loss_exit:  float,
     last_loss_dir:   str,
+    last_win_exit:   float,
     recent_candles:  list,
     session:         str,
     h4_trend:        str,
@@ -181,8 +207,10 @@ def ai_should_trade(
             signal_details  = signal_details,
             wins_today      = wins_today,
             losses_today    = losses_today,
-            last_loss_price = last_loss_price,
+            last_loss_entry = last_loss_entry,
+            last_loss_exit  = last_loss_exit,
             last_loss_dir   = last_loss_dir,
+            last_win_exit   = last_win_exit,
             recent_candles  = recent_candles,
             session         = session,
             h4_trend        = h4_trend,
