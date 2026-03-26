@@ -681,6 +681,15 @@ def run_bot():
         # FIX 13: AI REASONING LAYER
         # Only reached if score >= threshold and direction is valid
         # ══════════════════════════════════════════════════════
+
+        # FIX 17: Fetch live price HERE so AI reasoning gets correct price
+        # (previously price was fetched AFTER the AI block at line ~744 — bug!)
+        price, _, _ = trader.get_price(name)
+        if price is None:
+            log.warning(name + ": Could not fetch live price — skipping")
+            scan_results.append(config["emoji"] + " " + name + ": Price fetch failed")
+            continue
+
         ai_enabled = settings.get("ai_reasoning", True)
 
         if ai_enabled:
@@ -741,8 +750,8 @@ def run_bot():
         cpr_levels = cpr_calc.get_levels(config["instrument"])
         is_wide    = cpr_levels.get("is_wide", False) if cpr_levels else False
 
-        price, _, _ = trader.get_price(name)
-        raw_atr     = get_atr_pips(trader, name, config["pip"], multiplier=1.0)
+        # price already fetched above (FIX 17) — no duplicate fetch needed
+        raw_atr    = get_atr_pips(trader, name, config["pip"], multiplier=1.0)
         pip         = config["pip"]
 
         if raw_atr:
