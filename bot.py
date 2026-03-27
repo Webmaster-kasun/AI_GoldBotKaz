@@ -611,7 +611,7 @@ def run_bot():
                 scan_results.append(config["emoji"] + " " + name + ": Main cap reached")
                 continue
 
-        # RE-ENTRY GUARD
+        # RE-ENTRY GUARD variables — evaluated after signals.analyze() below
         last_entry_time      = today.get("last_trade_entry_time")
         last_entry_score     = today.get("last_trade_entry_score", 0)
         last_entry_direction = today.get("last_trade_entry_direction", "")
@@ -631,73 +631,6 @@ def run_bot():
                     continue
             except Exception as e:
                 log.warning("Duplicate lock error: " + str(e))
-
-        # SL COOLDOWN — 20-min same-direction block after any stop loss hit
-        # A professional never revenge-trades the same direction immediately after
-        # being stopped out — they wait for the market to show new structure first.
-        last_sl_time = today.get("last_sl_time")
-        if last_sl_time:
-            try:
-                sl_dt       = datetime.strptime(last_sl_time[:16].replace("T", " "), "%Y-%m-%d %H:%M")
-                mins_since  = (now_utc - sl_dt).total_seconds() / 60
-                last_sl_dir = today.get("last_loss_direction", "")
-                if mins_since < 20 and direction == last_sl_dir:
-                    remaining = int(20 - mins_since)
-                    log.info(
-                        name + " SL cooldown — " + str(round(mins_since, 1)) +
-                        " min since SL hit in " + last_sl_dir +
-                        " direction | " + str(remaining) + " min remaining"
-                    )
-                    scan_results.append(
-                        config["emoji"] + " " + name +
-                        ": SL cooldown " + str(remaining) + "min — no " + last_sl_dir + " re-entry yet"
-                    )
-                    continue
-            except Exception as e:
-                log.warning("SL cooldown error: " + str(e))
-
-        # Smart re-entry rules
-        if last_entry_time and last_entry_score > 0 and last_entry_direction:
-            try:
-                ak                      = "XAUUSD_ASIAN" if is_asian_gold else config["asset"]
-                peek_score, peek_dir, _ = signals.analyze(asset=ak)
-                same_dir                = (peek_dir == last_entry_direction)
-                price_now, _, _         = trader.get_price(name)
-                price_moved             = (abs((price_now or 0) - last_entry_price) / config["pip"]) >= 500 if last_entry_price else False
-
-                log.info(name + " re-entry | last=" + last_entry_direction + "@" + str(last_entry_score) +
-                         " now=" + peek_dir + "@" + str(peek_score) +
-                         " same=" + str(same_dir) + " moved=" + str(price_moved))
-
-                if same_dir and peek_score <= last_entry_score and not price_moved:
-                    scan_results.append(config["emoji"] + " " + name +
-                        ": Chasing — same " + last_entry_direction +
-                        " score " + str(peek_score) + " <= " + str(last_entry_score))
-                    continue
-                elif same_dir and peek_score >= 6:
-                    log.info(name + " ALLOWED — stronger score " + str(peek_score))
-                    today["last_trade_entry_score"]     = 0
-                    today["last_trade_entry_direction"] = ""
-                elif not same_dir and peek_score >= 5:
-                    log.info(name + " ALLOWED — direction flip to " + peek_dir)
-                    today["last_trade_entry_score"]     = 0
-                    today["last_trade_entry_direction"] = ""
-                elif price_moved and peek_score >= 5:
-                    log.info(name + " ALLOWED — new zone 500p+")
-                    today["last_trade_entry_score"]     = 0
-                    today["last_trade_entry_direction"] = ""
-                else:
-                    reason = ("same dir " + str(peek_score) + "/7" if same_dir
-                              else peek_dir + " score=" + str(peek_score) + "/7 < 5")
-                    scan_results.append(config["emoji"] + " " + name +
-                        ": Re-entry blocked — " + reason)
-                    continue
-
-                with open(trade_log, "w") as f:
-                    json.dump(today, f, indent=2)
-
-            except Exception as e:
-                log.warning("Re-entry guard error: " + str(e))
 
         max_spread            = settings.get("max_spread_gold_asian", 200) if is_asian_gold else settings.get("max_spread_gold", 150)
         spread_ok, spread_val = check_spread(trader, name, max_spread, config["pip"])
@@ -726,6 +659,29 @@ def run_bot():
             scan_results.append(config["emoji"] + " " + name + ": " + str(score) + "/7 — no setup yet")
             continue
 
+        # FIX B1: SL cooldown now runs AFTER signals.analyze() so 'direction' is the real
+        # current signal — previously it ran before analyze() using a stale loop variable.
+        last_sl_time = today.get("last_sl_time")
+        if last_sl_time:
+            try:
+                sl_dt       = datetime.strptime(last_sl_time[:16].replace("T", " "), "%Y-%m-%d %H:%M")
+                mins_since  = (now_utc - sl_dt).total_seconds() / 60
+                last_sl_dir = today.get("last_loss_direction", "")
+                if mins_since < 20 and direction == last_sl_dir:
+                    remaining = int(20 - mins_since)
+                    log.info(
+                        name + " SL cooldown — " + str(round(mins_since, 1)) +
+                        " min since SL hit in " + last_sl_dir +
+                        " direction | " + str(remaining) + " min remaining"
+                    )
+                    scan_results.append(
+                        config["emoji"] + " " + name +
+                        ": SL cooldown " + str(remaining) + "min — no " + last_sl_dir + " re-entry yet"
+                    )
+                    continue
+            except Exception as e:
+                log.warning("SL cooldown error: " + str(e))
+
         # ══════════════════════════════════════════════════════
         # FIX 13: AI REASONING LAYER
         # Only reached if score >= threshold and direction is valid
@@ -742,6 +698,46 @@ def run_bot():
         # FIX: force sync right before AI guard — ensures last_loss_* keys are
         # populated from OANDA even if the trade closed within the last 5-min scan window
         sync_closed_trades(trader, today, trade_log)
+
+        # FIX B2: Smart re-entry guard — now runs with real direction/score/price.
+        # Previously called signals.analyze() a second time (double API call + race condition).
+        # Now reuses the score/direction already computed above. Only clears entry_score
+        # (not direction) so context is preserved for the next guard evaluation.
+        if last_entry_time and last_entry_score > 0 and last_entry_direction:
+            try:
+                same_dir    = (direction == last_entry_direction)
+                price_moved = (abs(price - last_entry_price) / config["pip"]) >= 500 if last_entry_price else False
+
+                log.info(name + " re-entry | last=" + last_entry_direction + "@" + str(last_entry_score) +
+                         " now=" + direction + "@" + str(score) +
+                         " same=" + str(same_dir) + " moved=" + str(price_moved))
+
+                if same_dir and score <= last_entry_score and not price_moved:
+                    scan_results.append(config["emoji"] + " " + name +
+                        ": Chasing — same " + last_entry_direction +
+                        " score " + str(score) + " <= " + str(last_entry_score))
+                    continue
+                elif same_dir and score >= 6:
+                    log.info(name + " ALLOWED — stronger score " + str(score))
+                    today["last_trade_entry_score"] = 0
+                elif not same_dir and score >= 5:
+                    log.info(name + " ALLOWED — direction flip to " + direction)
+                    today["last_trade_entry_score"] = 0
+                elif price_moved and score >= 5:
+                    log.info(name + " ALLOWED — new zone 500p+")
+                    today["last_trade_entry_score"] = 0
+                else:
+                    reason = ("same dir " + str(score) + "/7" if same_dir
+                              else direction + " score=" + str(score) + "/7 < 5")
+                    scan_results.append(config["emoji"] + " " + name +
+                        ": Re-entry blocked — " + reason)
+                    continue
+
+                with open(trade_log, "w") as f:
+                    json.dump(today, f, indent=2)
+
+            except Exception as e:
+                log.warning("Re-entry guard error: " + str(e))
 
         ai_enabled = settings.get("ai_reasoning", True)
 
