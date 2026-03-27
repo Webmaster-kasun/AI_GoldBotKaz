@@ -173,16 +173,37 @@ def sync_closed_trades(trader, today, trade_log):
 
         today_closed = [t for t in trades if t.get("closeTime", "") >= day_start_utc]
         if today_closed:
-            latest = sorted(today_closed, key=lambda x: x.get("closeTime", ""))[-1]
-            today["last_trade_close_time"]   = latest.get("closeTime", "")
-            latest_pl                        = float(latest.get("realizedPL", 0))
-            today["last_trade_close_result"] = "WIN" if latest_pl > 0 else "LOSS"
-            # FIX: capture actual exit price (averageClosePrice from OANDA)
+            latest     = sorted(today_closed, key=lambda x: x.get("closeTime", ""))[-1]
+            latest_pl  = float(latest.get("realizedPL", 0))
             exit_price = latest.get("averageClosePrice")
+            open_price = latest.get("price")        # OANDA field: original entry price
+            trade_dir  = latest.get("currentUnits", "0")
+
+            today["last_trade_close_time"]   = latest.get("closeTime", "")
+            today["last_trade_close_result"] = "WIN" if latest_pl > 0 else "LOSS"
+
             if exit_price:
                 today["last_trade_exit_price"] = float(exit_price)
                 if latest_pl > 0:
                     today["last_win_exit_price"] = float(exit_price)
+
+            # FIX: persist loss context sourced directly from OANDA so AI guard
+            # always has fresh, reliable data — not stale in-memory guesses
+            if latest_pl < 0:
+                today["last_loss_exit_price"]  = float(exit_price) if exit_price else None
+                today["last_loss_entry_price"] = float(open_price) if open_price else today.get("last_trade_entry_price")
+                today["last_sl_time"]          = latest.get("closeTime", "")
+                # currentUnits: negative = SELL trade, positive = BUY trade
+                try:
+                    units = float(trade_dir)
+                    today["last_loss_direction"] = "SELL" if units < 0 else "BUY"
+                except Exception:
+                    today["last_loss_direction"] = today.get("last_trade_entry_direction", "")
+                log.info(
+                    "Loss context saved | dir=" + str(today["last_loss_direction"]) +
+                    " | entry=" + str(today["last_loss_entry_price"]) +
+                    " | sl_exit=" + str(today["last_loss_exit_price"])
+                )
 
         log.info("Synced W=" + str(wins) + " L=" + str(losses) + " consec=" + str(consec))
 
@@ -473,6 +494,10 @@ def run_bot():
             "breakeven_XAUUSD":           False,
             "ai_blocks_today":            0,
             "ai_allows_today":            0,
+            "last_loss_direction":        "",
+            "last_loss_entry_price":      None,
+            "last_loss_exit_price":       None,
+            "last_sl_time":               None,
         }
         with open(trade_log, "w") as f:
             json.dump(today, f, indent=2)
@@ -607,6 +632,30 @@ def run_bot():
             except Exception as e:
                 log.warning("Duplicate lock error: " + str(e))
 
+        # SL COOLDOWN — 20-min same-direction block after any stop loss hit
+        # A professional never revenge-trades the same direction immediately after
+        # being stopped out — they wait for the market to show new structure first.
+        last_sl_time = today.get("last_sl_time")
+        if last_sl_time:
+            try:
+                sl_dt       = datetime.strptime(last_sl_time[:16].replace("T", " "), "%Y-%m-%d %H:%M")
+                mins_since  = (now_utc - sl_dt).total_seconds() / 60
+                last_sl_dir = today.get("last_loss_direction", "")
+                if mins_since < 20 and direction == last_sl_dir:
+                    remaining = int(20 - mins_since)
+                    log.info(
+                        name + " SL cooldown — " + str(round(mins_since, 1)) +
+                        " min since SL hit in " + last_sl_dir +
+                        " direction | " + str(remaining) + " min remaining"
+                    )
+                    scan_results.append(
+                        config["emoji"] + " " + name +
+                        ": SL cooldown " + str(remaining) + "min — no " + last_sl_dir + " re-entry yet"
+                    )
+                    continue
+            except Exception as e:
+                log.warning("SL cooldown error: " + str(e))
+
         # Smart re-entry rules
         if last_entry_time and last_entry_score > 0 and last_entry_direction:
             try:
@@ -690,6 +739,10 @@ def run_bot():
             scan_results.append(config["emoji"] + " " + name + ": Price fetch failed")
             continue
 
+        # FIX: force sync right before AI guard — ensures last_loss_* keys are
+        # populated from OANDA even if the trade closed within the last 5-min scan window
+        sync_closed_trades(trader, today, trade_log)
+
         ai_enabled = settings.get("ai_reasoning", True)
 
         if ai_enabled:
@@ -698,9 +751,10 @@ def run_bot():
             recent_candles  = get_recent_h1_closes(trader, name)
             h4_trend, _, _  = signals.get_h4_trend()
             is_loss         = today.get("last_trade_close_result") == "LOSS"
-            last_loss_entry = today.get("last_trade_entry_price")  if is_loss else None
-            last_loss_exit  = today.get("last_trade_exit_price")   if is_loss else None
-            last_loss_dir   = today.get("last_trade_entry_direction") if is_loss else None
+            # Use dedicated loss keys populated by sync from OANDA — never stale entry-time memory
+            last_loss_entry = today.get("last_loss_entry_price")
+            last_loss_exit  = today.get("last_loss_exit_price")
+            last_loss_dir   = today.get("last_loss_direction", "")
             last_win_exit   = today.get("last_win_exit_price")
 
             ai_result = ai_should_trade(
