@@ -151,10 +151,10 @@ TODAY SO FAR:
 
 YOUR TASK — be a strict risk manager, NOT a trade promoter:
 1. Is this entry chasing price far above/below the last exit? → block if chase_pips > 300
-2. Is this the same direction as the last loss AND price is back in the same zone? → block
+2. Same direction as last loss AND price within 150p of the SL exit zone? → ALWAYS block, no exceptions. This is the re-entry trap — the market just proved that direction fails at that price.
 3. Do recent H1 candles oppose the signal direction? → reduce confidence
 4. Is H4 trend aligned? → required for HIGH confidence
-5. Are losses today >= 2? → require score 6/7+ to approve, otherwise block
+5. Are losses today >= 2? → require score 7/7 AND HIGH confidence to approve, otherwise block. Two losses means the market is not agreeing with the strategy today — only the strongest setups qualify.
 
 Respond with ONLY this JSON (no other text):
 {
