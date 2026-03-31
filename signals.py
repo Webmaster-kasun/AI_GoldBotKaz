@@ -10,8 +10,8 @@ Scoring (7 pts max):
   Check 6 — Not Overextended(0–1 pt):  Price within 800p of EMA20 (not chasing)
   Check 7 — M15 Rejection   (0–1 pt):  Last M15 candle shows rejection at level
 
-  Need 5/7 to trade (London/NY) | 4/7 Asian session
-  ATR filter: 300–5000p range (healthy volatility)
+  Need 5/7 to trade (London/NY) | 4/7 Asian session  # FIX 3: was incorrectly 5/5
+  ATR filter: 200–5000p Asian | 300–5000p London/NY
   SL range: 1000–2400 pips (wider for gold's true swings)
 
 FIX 12:
@@ -213,7 +213,7 @@ class SignalEngine:
         reasons   = []
         score     = 0
         direction = "NONE"
-        threshold = 5 if is_asian else 5
+        threshold = 4 if is_asian else 5  # FIX 3: Asian was 5/5 (never different) — now 4/7 as intended
 
         h1_closes, h1_highs, h1_lows, _, _ = self._fetch_candles("XAU_USD", "H1", 60)
 
@@ -229,7 +229,7 @@ class SignalEngine:
         atr_pips = self._get_atr_pips(h1_closes, h1_highs, h1_lows)
         if atr_pips is not None:
             log.info("ATR=" + str(atr_pips) + "p")
-            min_atr = 200 if is_asian else 500
+            min_atr = 200 if is_asian else 300  # FIX 4: was 500 — blocked normal 300-450p London/NY days
             if atr_pips < min_atr:
                 return 0, "NONE", "ATR=" + str(atr_pips) + "p — too quiet, skip"
             if atr_pips > 5000:
@@ -270,13 +270,21 @@ class SignalEngine:
         # FIX S2: H4 HARD BLOCK — now returns score=0 (not partial CPR score=2).
         # H4 direction is guaranteed non-NONE here (caught at top of function).
         if direction != h4_direction:
+            gap = round(h4_ema20 - h4_ema50, 2)
+            gap_pips = round(abs(gap) / 0.01)
             log.warning(
                 "H4 BLOCK FIRED | signal=" + direction +
                 " blocked by H4 trend=" + h4_direction +
                 " | H4 EMA20=" + str(h4_ema20) +
-                " H4 EMA50=" + str(h4_ema50)
+                " H4 EMA50=" + str(h4_ema50) +
+                " | gap=" + str(gap) + " (" + str(gap_pips) + "p to cross)"
             )
-            reasons.append("H4 trend=" + h4_direction + " BLOCKS " + direction + " signal")
+            # FIX 1: Richer block message — shows pip gap so you know how far H4 is from flipping
+            reasons.append(
+                "H4 trend=" + h4_direction + " BLOCKS " + direction + " signal"
+                " | EMA gap=" + str(gap_pips) + "p to cross"
+                " (waiting for H4 flip OR price drop below BC=" + str(bc) + ")"
+            )
             return 0, "NONE", " | ".join(reasons)
         else:
             log.info(
