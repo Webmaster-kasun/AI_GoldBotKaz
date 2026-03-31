@@ -154,7 +154,7 @@ DECISION RULES — apply in order, first match wins:
 1. Chase block: entry is >300p away from last exit in same direction → NO
 2. Zone trap: same direction as last loss AND price within 150p of SL exit → NO, always
 3. Loss filter: losses today >= 2 → require score 7/7 + H4 aligned → otherwise NO
-4. Asian filter: is_asian=True AND score < 6 → NO (Asian needs cleaner setups)
+4. Asian filter: is_asian=True AND score < 5 → NO (FIX 5: was < 6, blocked all valid 5/7 Asian trades)
 5. H4 conflict: H4 trend opposes direction → NO (H4 is the macro filter, non-negotiable)
 6. H1 momentum: recent candles show 3+ consecutive moves AGAINST signal direction → LOW confidence
 7. Session quality: London Open or NY Overlap → allow MEDIUM+ | Other hours → require HIGH
