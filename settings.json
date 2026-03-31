@@ -1,7 +1,7 @@
 {
   "max_trades_day": 10,
   "signal_threshold": 5,
-  "signal_threshold_asian": 4,
+  "signal_threshold_asian": 5,
   "demo_mode": true,
   "trade_gold": true,
   "trade_gold_asian": true,
