@@ -153,10 +153,10 @@ class SignalEngine:
                 upper_pct  = upper_wick / total_range
                 lower_pct  = lower_wick / total_range
 
-                # FIX S5: raised threshold from 40% to 50% — genuine rejections have dominant wicks
-                if direction == "SELL" and upper_pct >= 0.50:
+                # Lowered from 50% to 45% — 50% was too rare, valid rejections were being missed
+                if direction == "SELL" and upper_pct >= 0.45:
                     return True, "M15 upper wick=" + str(round(upper_pct*100)) + "% — rejection at top"
-                elif direction == "BUY" and lower_pct >= 0.50:
+                elif direction == "BUY" and lower_pct >= 0.45:
                     return True, "M15 lower wick=" + str(round(lower_pct*100)) + "% — rejection at bottom"
 
             if direction == "SELL":
@@ -229,7 +229,7 @@ class SignalEngine:
         atr_pips = self._get_atr_pips(h1_closes, h1_highs, h1_lows)
         if atr_pips is not None:
             log.info("ATR=" + str(atr_pips) + "p")
-            min_atr = 200 if is_asian else 300  # FIX 4: was 500 — blocked normal 300-450p London/NY days
+            min_atr = 200 if is_asian else 200  # 200p for all sessions — 300p was blocking normal days
             if atr_pips < min_atr:
                 return 0, "NONE", "ATR=" + str(atr_pips) + "p — too quiet, skip"
             if atr_pips > 5000:
