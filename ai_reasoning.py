@@ -129,9 +129,9 @@ def ai_should_trade(
         return result
 
     except requests.exceptions.Timeout:
-        log.warning("AI reasoning timed out -- allowing trade as fallback.")
-        return {"allow": True, "reason": "AI timeout -- fallback allow", "confidence": "low"}
+        log.warning("AI reasoning timed out -- blocking trade as safe fallback.")
+        return {"allow": False, "reason": "AI timeout -- fallback deny (safe mode)", "confidence": "low"}
 
     except Exception as exc:
-        log.warning("AI reasoning error (%s) -- allowing trade as fallback.", exc)
-        return {"allow": True, "reason": f"AI error: {exc}", "confidence": "low"}
+        log.warning("AI reasoning error (%s) -- blocking trade as safe fallback.", exc)
+        return {"allow": False, "reason": f"AI error: {exc} -- fallback deny (safe mode)", "confidence": "low"}
