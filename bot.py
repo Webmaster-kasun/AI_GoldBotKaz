@@ -53,6 +53,7 @@ from telegram_templates import (
 )
 from reconcile_state import reconcile_runtime_state, startup_oanda_reconcile
 from ai_reasoning import ai_should_trade
+from auto_tuner import run_auto_tune_after_trade_close
 
 configure_logging()
 log = get_logger(__name__)
@@ -896,6 +897,10 @@ def backfill_pnl(history: list, trader, alert, settings: dict) -> list:
                             log.warning("Could not send trade_closed alert: %s", _e)
     if changed:
         save_history(history)
+        try:
+            run_auto_tune_after_trade_close()
+        except Exception as _at_exc:
+            log.warning("Auto-tuner post-trade-close error: %s", _at_exc)
     return history
 
 
