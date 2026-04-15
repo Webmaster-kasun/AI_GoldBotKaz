@@ -1,5 +1,5 @@
 {
-  "bot_name": "CPR Gold Bot v5.2",
+  "bot_name": "CPR Gold Bot v5.3",
   "demo_mode": true,
   "trade_gold": true,
   "signal_threshold": 4,
@@ -20,20 +20,20 @@
   "pyramid_sl_usd": 1.5,
   "pyramid_max_risk_usd": 50,
   "max_trades_day": 20,
-  "max_losing_trades_day": 8,
-  "loss_streak_cooldown_min": 90,
+  "max_losing_trades_day": 4,
+  "loss_streak_cooldown_min": 60,
   "exhaustion_atr_mult": 2.5,
   "max_spread_pips": 160,
   "spread_limits": {
     "London": 140,
     "US": 140,
-    "Asian": 150
+    "Asian": 120
   },
   "session_only": true,
   "session_thresholds": {
     "London": 4,
     "US": 4,
-    "Asian": 4
+    "Asian": 5
   },
   "news_filter_enabled": true,
   "news_block_before_min": 30,
@@ -59,7 +59,7 @@
   "telegram_show_margin": true,
   "xau_margin_rate_override": 0.05,
   "trading_day_start_hour_sgt": 8,
-  "max_losing_trades_session": 4,
+  "max_losing_trades_session": 2,
   "midnight_guard_min": 0,
   "max_trades_london": 10,
   "max_trades_us": 10,
@@ -70,7 +70,7 @@
   "consecutive_sl_guard": 3,
   "breakeven_enabled": false,
   "min_reentry_wait_min": 10,
-  "version": "5.2",
+  "version": "5.3",
   "instrument": "XAU_USD",
   "instrument_display": "XAU/USD",
   "timeframe": "M15",
@@ -80,7 +80,7 @@
   "london_session_enabled": true,
   "us_session_enabled": true,
   "asian_session_enabled": true,
-  "max_trades_asian": 5,
+  "max_trades_asian": 3,
   "asian_report_hour_sgt": 16,
   "asian_report_minute_sgt": 5,
   "london_report_hour_sgt": 21,
@@ -89,11 +89,12 @@
   "us_report_minute_sgt": 5,
   "sl_min_atr_mult": 0.8,
   "h1_trend_filter_enabled": true,
-  "h1_ema_period": 21,
+  "h1_ema_period": 50,
   "h4_trend_filter_enabled": true,
-  "h4_ema_period": 21,
+  "h4_ema_period": 50,
   "require_candle_close": true,
   "sl_direction_cooldown_min": 180,
   "post_win_candle_block": true,
-  "ai_reasoning": true
+  "ai_reasoning": true,
+  "h4_ema_buffer_pct": 0.15
 }

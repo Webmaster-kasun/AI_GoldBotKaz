@@ -178,18 +178,35 @@ class SignalEngine:
                 h1_trend_bullish = _h1_price > _h1_ema
         levels["h1_trend_bullish"] = h1_trend_bullish
 
-        # ── H4 trend filter (v5.3) ─────────────────────────────────────────
+        # ── H4 trend filter (v5.3 FIXED) ─────────────────────────────────
         # Hard block on macro H4 direction — prevents shorting a bull trend
         # or buying a bear trend even when M15/CPR gives a counter signal.
+        # v5.3 FIX: Added 0.15% buffer zone — price must be clearly above/below
+        # the H4 EMA (not just marginally crossing) to avoid flip-flopping on
+        # consolidation days. This is the main reason Apr 12-13 SELL signals were
+        # not blocked: price was hovering just above the H4 EMA21.
         h4_trend_bullish = None   # None = filter disabled or insufficient data
         _h4_filter = bool((settings or {}).get("h4_trend_filter_enabled", True))
         if _h4_filter:
             _h4_period = int((settings or {}).get("h4_ema_period", 21))
+            _h4_buffer_pct = float((settings or {}).get("h4_ema_buffer_pct", 0.15))
             h4_closes, _, _ = self._fetch_candles(instrument, "H4", _h4_period + 5)
             if len(h4_closes) >= _h4_period:
                 _h4_ema = sum(h4_closes[-_h4_period:]) / _h4_period
                 _h4_price = h4_closes[-1]
-                h4_trend_bullish = _h4_price > _h4_ema
+                _h4_diff_pct = (_h4_price - _h4_ema) / _h4_ema * 100
+                if _h4_diff_pct > _h4_buffer_pct:
+                    h4_trend_bullish = True   # clearly above EMA → bullish
+                elif _h4_diff_pct < -_h4_buffer_pct:
+                    h4_trend_bullish = False  # clearly below EMA → bearish
+                else:
+                    h4_trend_bullish = None   # within buffer zone → no trend block
+                log.info(
+                    "H4 trend filter | price=%.2f EMA%d=%.2f diff=%.2f%% buffer=%.2f%% → %s",
+                    _h4_price, _h4_period, _h4_ema, _h4_diff_pct, _h4_buffer_pct,
+                    "BULLISH" if h4_trend_bullish is True else
+                    ("BEARISH" if h4_trend_bullish is False else "NEUTRAL/buffer"),
+                )
         levels["h4_trend_bullish"] = h4_trend_bullish
 
         # ATR(14) — used by bot.py for SL sizing, not for scoring

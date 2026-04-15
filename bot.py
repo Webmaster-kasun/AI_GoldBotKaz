@@ -148,6 +148,9 @@ def validate_settings(settings: dict) -> dict:
     settings.setdefault("sl_min_atr_mult",           0.8)           # v5.1 — adaptive SL floor as fraction of ATR
     settings.setdefault("h1_trend_filter_enabled",   True)          # v5.1 — H1 EMA trend filter
     settings.setdefault("h1_ema_period",             21)            # v5.1 — H1 EMA period for trend
+    settings.setdefault("h4_trend_filter_enabled",   True)          # v5.3 — H4 macro trend filter
+    settings.setdefault("h4_ema_period",             21)            # v5.3 — H4 EMA period
+    settings.setdefault("h4_ema_buffer_pct",         0.15)          # v5.3 — buffer zone ±% around H4 EMA (prevents flip-flop)
     settings.setdefault("require_candle_close",      True)          # v5.1 — wait for M15 candle close
     settings.setdefault("sl_direction_cooldown_min", 60)            # v5.1 — cooldown after direction guard fires
     settings.setdefault("post_win_candle_block",     True)          # v5.2 — block entries until M15 candle after TP close + next candle confirmed
@@ -1521,9 +1524,15 @@ def _signal_phase(db, run_id, settings, alert, trader, history, now_sgt, today, 
             cycle_minutes=int(settings.get("cycle_minutes", 5)),
             **payload,
         )
-        if msg != sig_cache.get("last_signal_msg", ""):
+        # v5.3 FIX: dedup key ignores volatile footer so identical WATCHING/BLOCKED
+        # states do not spam Telegram every 5 minutes.
+        _dedup_key = f"{decision}|{reason}|{score}|{direction}"
+        if _dedup_key != sig_cache.get("last_signal_key", ""):
             alert.send(msg)
-            sig_cache.update({"score": score, "direction": direction, "last_signal_msg": msg})
+            sig_cache.update({
+                "score": score, "direction": direction,
+                "last_signal_msg": msg, "last_signal_key": _dedup_key,
+            })
             save_signal_cache(sig_cache)
 
     # ── No setup or below threshold ───────────────────────────────────────────
@@ -1826,13 +1835,14 @@ def _signal_phase(db, run_id, settings, alert, trader, history, now_sgt, today, 
                     f"🤖 AI blocked — {ai_result['reason']} "
                     f"(confidence={ai_result['confidence']})"
                 )
+                # v5.3 FIX: only send via _send_signal_update (which deduplicates).
+                # Removed extra alert.send(ai_block_msg) which caused double-spam.
                 _send_signal_update("BLOCKED", ai_block_msg,
                                     {"rr_ratio": rr_ratio, "tp_pct": tp_pct,
                                      "spread_pips": spread_pips, "spread_limit": spread_limit,
                                      "session_ok": True, "news_ok": True,
                                      "open_trade_ok": True, "margin_ok": True})
                 log.info("AI BLOCKED entry: %s", ai_result["reason"], extra={"run_id": run_id})
-                alert.send(ai_block_msg)
                 update_runtime_state(
                     last_cycle_finished=now_sgt.strftime("%Y-%m-%d %H:%M:%S"),
                     status="SKIPPED_AI_BLOCK",
