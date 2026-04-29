@@ -140,8 +140,8 @@ def validate_settings(settings: dict) -> dict:
     # v4.4 — Three sessions active
     settings.setdefault("spread_limits",             {"Asian": 150, "London": 140, "US": 140})
     settings.setdefault("max_trades_day",            999)   # v4.0-uncapped
-    settings.setdefault("max_wins_day",              999)   # uncapped by default; set to 1 to stop after first win
-    settings.setdefault("max_losing_trades_day",     999)   # v4.0-uncapped
+    settings.setdefault("max_wins_day",              1)     # v5.4 — stop after 1 win/day; matches settings.json default
+    settings.setdefault("max_losing_trades_day",     3)     # v5.4 — safe hard stop; was 999 (uncapped) — dangerous fallback
     settings.setdefault("sl_mode",                   "atr_based")   # v4.0
     settings.setdefault("tp_mode",                   "rr_multiple")
     settings.setdefault("rr_ratio",                  2.65)          # v4.2 — read from settings.json
@@ -360,7 +360,12 @@ def daily_totals(history: list, today_str: str, trader=None, instrument: str = I
                 if p < 0:
                     losses += 1
                 elif p > 0:
-                    wins += 1
+                    # v5.4 FIX: use closed_at_sgt for win counting so a trade entered
+                    # today but closed after midnight (same trading day) is counted
+                    # correctly. Falls back to timestamp_sgt if closed_at_sgt absent.
+                    _win_day = (t.get("closed_at_sgt") or t.get("timestamp_sgt") or "")[:10]
+                    if _win_day == today_str:
+                        wins += 1
     if trader is not None:
         try:
             position = trader.get_position(instrument)
@@ -1372,9 +1377,14 @@ def _guard_phase(db, run_id, settings, alert, trader, history, now_sgt, today, d
     #   2. A brand-new M15 candle has opened and confirmed.
     # This is NOT a cooldown timer — it is purely candle-boundary based.
     if settings.get("post_win_candle_block", True):
+        # v5.4 FIX: only look at wins from today's trading day, not all-time history.
+        # Without this filter, a TP win from a previous day blocks the first entry
+        # of the next session indefinitely until a new M15 candle boundary passes.
         _last_win = next(
             (t for t in reversed(history)
-             if t.get("status") == "FILLED" and (t.get("realized_pnl_usd") or 0) > 0),
+             if t.get("status") == "FILLED"
+             and (t.get("realized_pnl_usd") or 0) > 0
+             and (t.get("closed_at_sgt") or t.get("timestamp_sgt") or "")[:10] == today),
             None,
         )
         if _last_win:
@@ -1587,6 +1597,43 @@ def _signal_phase(db, run_id, settings, alert, trader, history, now_sgt, today, 
         update_runtime_state(last_cycle_finished=now_sgt.strftime("%Y-%m-%d %H:%M:%S"), status="SKIPPED_TRADE_GOLD_DISABLED")
         db.finish_cycle(run_id, status="SKIPPED", summary={"stage": "trade_switch"})
         return None
+
+    # ── Global post-SL re-entry cooldown guard (v5.4) ────────────────────────
+    # Blocks ANY new entry for min_reentry_wait_min minutes after any SL close,
+    # regardless of setup name. Fixes rapid re-entry observed in live data (gaps
+    # of 1.8 min and 2.1 min after SL) that bypassed the same-setup guard.
+    _global_sl_cooldown = int(settings.get("min_reentry_wait_min", 10))
+    if _global_sl_cooldown > 0 and history:
+        _last_sl = next(
+            (t for t in reversed(history)
+             if t.get("status") == "FILLED"
+             and isinstance(t.get("realized_pnl_usd"), (int, float))
+             and t.get("realized_pnl_usd") < 0),
+            None,
+        )
+        if _last_sl:
+            _sl_closed_str = _last_sl.get("closed_at_sgt") or _last_sl.get("timestamp_sgt") or ""
+            _sl_closed_dt  = _parse_sgt_timestamp(_sl_closed_str)
+            if _sl_closed_dt:
+                _sl_gap_min = (now_sgt - _sl_closed_dt).total_seconds() / 60
+                if _sl_gap_min < _global_sl_cooldown:
+                    _remaining_sl = int(_global_sl_cooldown - _sl_gap_min)
+                    _sl_reason = (
+                        f"Post-SL global cooldown — last loss closed {_sl_gap_min:.1f}min ago, "
+                        f"waiting {_remaining_sl}min more (min_reentry_wait_min={_global_sl_cooldown})"
+                    )
+                    _send_signal_update("BLOCKED", _sl_reason,
+                                        {"session_ok": True, "news_ok": True, "open_trade_ok": True})
+                    log.info("Post-SL cooldown blocking entry: %s", _sl_reason, extra={"run_id": run_id})
+                    update_runtime_state(
+                        last_cycle_finished=now_sgt.strftime("%Y-%m-%d %H:%M:%S"),
+                        status="SKIPPED_POST_SL_COOLDOWN",
+                    )
+                    db.finish_cycle(run_id, status="SKIPPED", summary={
+                        "stage": "post_sl_cooldown", "gap_min": round(_sl_gap_min, 1),
+                        "cooldown_min": _global_sl_cooldown,
+                    })
+                    return None
 
     # ── Same-setup re-entry cooldown guard ────────────────────────────────────
     # v4.2: Prevents a duplicate trade when a CPR cache invalidation re-fetches
@@ -1880,6 +1927,15 @@ def _signal_phase(db, run_id, settings, alert, trader, history, now_sgt, today, 
 
             lot_multiplier = int(ai_result.get("lot_multiplier", 1))
             lot_multiplier = max(1, min(3, lot_multiplier))
+            # v5.4 FIX: never scale up position size if any loss is already booked
+            # today. Oversized units on a losing day amplify drawdown dangerously
+            # (observed: 7.6u SL = -$147, 7.2u SL = -$128 in live data).
+            if lot_multiplier > 1 and daily_losses > 0 and settings.get("ai_scale_after_loss", False) is False:
+                log.info(
+                    "AI lot_multiplier %dx suppressed — %d loss(es) already today (ai_scale_after_loss=false)",
+                    lot_multiplier, daily_losses, extra={"run_id": run_id},
+                )
+                lot_multiplier = 1
             ai_confidence  = ai_result.get("confidence", "MEDIUM")
             ai_reason      = ai_result.get("reason", "")
             log.info(
