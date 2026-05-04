@@ -417,6 +417,25 @@ def session_losses(history: list, session_name: str, trading_day: str) -> int:
     return count
 
 
+def session_wins(history: list, session_name: str, trading_day: str) -> int:
+    """Count wins recorded during a specific session on a given trading day.
+
+    Used for the per-session win cap (v5.5): after max_wins_day wins in a session,
+    entries are blocked for the rest of that session. The next session gets a
+    clean counter so the bot can trade again.
+    session_name should match the macro-session stored on each trade record
+    ('Asian' | 'London' | 'US').
+    """
+    count = 0
+    for t in history:
+        if t.get("timestamp_sgt", "").startswith(trading_day) and t.get("status") == "FILLED":
+            pnl = t.get("realized_pnl_usd")
+            if isinstance(pnl, (int, float)) and pnl > 0:
+                if t.get("macro_session") == session_name or t.get("session") == session_name:
+                    count += 1
+    return count
+
+
 def get_closed_trade_records_today(history: list, today_str: str) -> list:
     closed = []
     for t in history:
@@ -1305,25 +1324,33 @@ def _guard_phase(db, run_id, settings, alert, trader, history, now_sgt, today, d
         db.finish_cycle(run_id, status="SKIPPED", summary={"stage": "daily_caps", "reason": "loss_cap"})
         return None
 
-    # ── Daily win cap (stop trading after N winning trades in a day) ──────────
+    # ── Session win cap (stop trading after N wins in the CURRENT SESSION) ─────
+    # v5.5 FIX: was blocking until next trading day (08:00 SGT). Now blocks only
+    # for the remainder of the current session. Next session gets a clean counter.
     max_wins = int(settings.get("max_wins_day", 1))
-    if daily_wins >= max_wins:
-        day_start_h   = int(settings.get("trading_day_start_hour_sgt", 8))
-        day_reset_sgt = (now_sgt + timedelta(days=1)).replace(
-            hour=day_start_h, minute=0, second=0, microsecond=0
-        )
+    _session_wins = session_wins(history, session, today) if session is not None else 0
+    if _session_wins >= max_wins and session is not None:
+        _lon_start = int(settings.get("session_start_hour_sgt", 16))
+        _us_show   = 21
+        _next_session_map = {
+            "Asian":  f"London ({_lon_start:02d}:00 SGT)",
+            "London": f"US ({_us_show:02d}:00 SGT)",
+            "US":     f"Asian (08:00 SGT next day)",
+        }
+        _next_sess_str = _next_session_map.get(session, "next session")
         msg = (
-            f"🏆 Daily win cap reached — {daily_wins}/{max_wins} winning trade(s) today. "
-            f"No more entries until {day_reset_sgt.strftime('%Y-%m-%d %H:%M')} SGT."
+            f"🏆 Win cap reached — {_session_wins}/{max_wins} win(s) this {session} session. "
+            f"Sitting out the rest of this session. "
+            f"Trading resumes at {_next_sess_str}."
         )
         log_event("COOLDOWN_ACTIVE", msg, run_id=run_id)
-        send_once_per_state(alert, ops, "win_cap_state", f"win_cap:{today}", msg)
+        send_once_per_state(alert, ops, "win_cap_state", f"win_cap:{today}:{session}", msg)
         update_runtime_state(
             last_cycle_finished=now_sgt.strftime("%Y-%m-%d %H:%M:%S"),
             status="SKIPPED_WIN_CAP",
         )
         db.finish_cycle(run_id, status="SKIPPED",
-                        summary={"stage": "daily_caps", "reason": "win_cap"})
+                        summary={"stage": "session_caps", "reason": "win_cap", "session": session})
         return None
 
     # v4.2 — Per-session loss sub-cap.
