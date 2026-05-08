@@ -154,7 +154,8 @@ def validate_settings(settings: dict) -> dict:
     settings.setdefault("h4_ema_buffer_pct",         0.15)          # v5.3 — buffer zone ±% around H4 EMA (prevents flip-flop)
     settings.setdefault("require_candle_close",      True)          # v5.1 — wait for M15 candle close
     settings.setdefault("sl_direction_cooldown_min", 60)            # v5.1 — cooldown after direction guard fires
-    settings.setdefault("post_win_candle_block",     True)          # v5.2 — block entries until M15 candle after TP close + next candle confirmed
+    settings.setdefault("post_win_candle_block",     True)          # v5.6 — block new entries for post_win_cooldown_hours after a win
+    settings.setdefault("post_win_cooldown_hours",   6)             # v5.6 — hours to block after a win (default 6h)
     settings.setdefault("ai_reasoning",              True)          # v5.2 — Claude AI filter before order placement
     settings.setdefault("signal_threshold",          4)
     settings.setdefault("position_full_usd",         100)
@@ -1398,15 +1399,15 @@ def _guard_phase(db, run_id, settings, alert, trader, history, now_sgt, today, d
         db.finish_cycle(run_id, status="SKIPPED", summary={"stage": "cooldown_guard"})
         return None
 
-    # ── Post-win M15 candle block (v5.2) ──────────────────────────────────────
-    # After a TP close, block new entries until:
-    #   1. The M15 candle the win closed ON has fully passed, AND
-    #   2. A brand-new M15 candle has opened and confirmed.
-    # This is NOT a cooldown timer — it is purely candle-boundary based.
+    # ── Post-win 6-hour cooldown block (v5.6) ─────────────────────────────────
+    # After any winning trade (TP hit), block all new entries for
+    # post_win_cooldown_hours (default 6 h).  Replaces the old 2-candle
+    # M15 boundary check which was too short and let a second trade open
+    # right after a win, almost always resulting in a loss.
     if settings.get("post_win_candle_block", True):
-        # v5.4 FIX: only look at wins from today's trading day, not all-time history.
-        # Without this filter, a TP win from a previous day blocks the first entry
-        # of the next session indefinitely until a new M15 candle boundary passes.
+        _post_win_hours = float(settings.get("post_win_cooldown_hours", 6))
+        # Only look at wins from today's trading day to avoid blocking the
+        # very first entry of the next session.
         _last_win = next(
             (t for t in reversed(history)
              if t.get("status") == "FILLED"
@@ -1419,71 +1420,37 @@ def _guard_phase(db, run_id, settings, alert, trader, history, now_sgt, today, d
             if _closed_at_str:
                 try:
                     _closed_at = datetime.strptime(_closed_at_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=SGT)
-                    # Which M15 candle did the win close on?
-                    _win_candle_start = _closed_at.replace(
-                        minute=(_closed_at.minute // 15) * 15,
-                        second=0, microsecond=0,
-                    )
-                    _win_candle_end = _win_candle_start + timedelta(minutes=15)
-                    # The very next candle after that also needs to fully open —
-                    # so the block lifts when a new candle starts AFTER win_candle_end.
-                    # i.e. current_candle_start must be >= win_candle_end
-                    _current_candle_start = now_sgt.replace(
-                        minute=(now_sgt.minute // 15) * 15,
-                        second=0, microsecond=0,
-                    )
-                    if _current_candle_start < _win_candle_end:
-                        # Still on the same candle the win closed on
-                        _secs_left = int((_win_candle_end - now_sgt).total_seconds())
+                    _block_until = _closed_at + timedelta(hours=_post_win_hours)
+                    if now_sgt < _block_until:
+                        _secs_left = int((_block_until - now_sgt).total_seconds())
                         _mins_left = max(1, _secs_left // 60)
+                        _hrs_left  = _mins_left // 60
+                        _rem_mins  = _mins_left % 60
+                        _time_str  = (f"{_hrs_left}h {_rem_mins}m" if _hrs_left else f"{_rem_mins}m")
                         _msg = (
-                            f"🕯️ Post-win candle block — win closed on M15 candle "
-                            f"{_win_candle_start.strftime('%H:%M')}–{_win_candle_end.strftime('%H:%M')} SGT "
-                            f"(block lifts when next candle opens, ≈{_mins_left}m)"
+                            f"🛑 Post-win cooldown — new entries blocked for {_time_str} "
+                            f"(win closed at {_closed_at.strftime('%H:%M')} SGT, "
+                            f"resumes at {_block_until.strftime('%H:%M')} SGT)"
                         )
                         log.info(_msg, extra={"run_id": run_id})
                         send_once_per_state(
                             alert, ops, "post_win_candle_state",
-                            f"post_win_same_candle:{_win_candle_start.strftime('%Y-%m-%d %H:%M')}",
+                            f"post_win_cooldown:{_closed_at.strftime('%Y-%m-%d %H:%M')}",
                             _msg,
                         )
                         update_runtime_state(
                             last_cycle_finished=now_sgt.strftime("%Y-%m-%d %H:%M:%S"),
-                            status="SKIPPED_POST_WIN_CANDLE",
+                            status="SKIPPED_POST_WIN_COOLDOWN",
                         )
                         db.finish_cycle(run_id, status="SKIPPED",
                                         summary={"stage": "post_win_candle_block",
-                                                 "win_candle": _win_candle_start.strftime("%H:%M"),
-                                                 "reason": "still_on_win_candle"})
+                                                 "win_closed_at": _closed_at.strftime("%H:%M"),
+                                                 "block_until": _block_until.strftime("%H:%M"),
+                                                 "reason": "post_win_6h_cooldown"})
                         return None
-                    elif _current_candle_start == _win_candle_end:
-                        # On the very next candle right after the win — wait for it to close too
-                        _next_candle_end = _win_candle_end + timedelta(minutes=15)
-                        _secs_left = int((_next_candle_end - now_sgt).total_seconds())
-                        _mins_left = max(1, _secs_left // 60)
-                        _msg = (
-                            f"🕯️ Post-win candle block — confirming next M15 candle "
-                            f"{_current_candle_start.strftime('%H:%M')}–{_next_candle_end.strftime('%H:%M')} SGT "
-                            f"(block lifts when candle closes, ≈{_mins_left}m)"
-                        )
-                        log.info(_msg, extra={"run_id": run_id})
-                        send_once_per_state(
-                            alert, ops, "post_win_candle_state",
-                            f"post_win_confirm_candle:{_current_candle_start.strftime('%Y-%m-%d %H:%M')}",
-                            _msg,
-                        )
-                        update_runtime_state(
-                            last_cycle_finished=now_sgt.strftime("%Y-%m-%d %H:%M:%S"),
-                            status="SKIPPED_POST_WIN_CANDLE_CONFIRM",
-                        )
-                        db.finish_cycle(run_id, status="SKIPPED",
-                                        summary={"stage": "post_win_candle_block",
-                                                 "win_candle": _win_candle_start.strftime("%H:%M"),
-                                                 "reason": "waiting_for_confirm_candle"})
-                        return None
-                    # else: current candle is ≥ 2 candles after win candle → block lifted, proceed
+                    # else: cooldown has expired → proceed normally
                 except Exception as _pwe:
-                    log.warning("Post-win candle block check error: %s", _pwe, extra={"run_id": run_id})
+                    log.warning("Post-win cooldown check error: %s", _pwe, extra={"run_id": run_id})
 
     window_key = get_window_key(session)
     window_cap = get_window_trade_cap(window_key, settings)
