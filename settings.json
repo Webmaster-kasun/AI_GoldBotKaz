@@ -96,6 +96,7 @@
   "require_candle_close": true,
   "sl_direction_cooldown_min": 180,
   "post_win_candle_block": true,
+  "post_win_cooldown_hours": 6,
   "ai_reasoning": true,
   "h4_ema_buffer_pct": 0.15,
   "ai_scale_after_loss": false
