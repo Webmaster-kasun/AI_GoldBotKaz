@@ -418,22 +418,49 @@ def session_losses(history: list, session_name: str, trading_day: str) -> int:
     return count
 
 
+_SESSION_HOURS = {
+    "Asian":  (8,  15),
+    "London": (16, 20),
+    "US":     (21,  0),   # 21:00–00:59 (midnight spans two calendar hours)
+}
+
 def session_wins(history: list, session_name: str, trading_day: str) -> int:
     """Count wins recorded during a specific session on a given trading day.
 
     Used for the per-session win cap (v5.5): after max_wins_day wins in a session,
     entries are blocked for the rest of that session. The next session gets a
     clean counter so the bot can trade again.
-    session_name should match the macro-session stored on each trade record
-    ('Asian' | 'London' | 'US').
+
+    v5.6 FIX: previously relied solely on the macro_session field stored on the
+    trade record. If that field was missing or mis-labelled (e.g. trade entered
+    at session boundary), the counter returned 0 and the win cap never fired
+    (observed: trade #8 entered 4 min after #7 TP, same London session).
+    Now also falls back to checking closed_at_sgt time against session hours.
     """
+    s_start, s_end = _SESSION_HOURS.get(session_name, (0, 23))
     count = 0
     for t in history:
         if t.get("timestamp_sgt", "").startswith(trading_day) and t.get("status") == "FILLED":
             pnl = t.get("realized_pnl_usd")
             if isinstance(pnl, (int, float)) and pnl > 0:
+                # Primary: check stored macro_session / session field
                 if t.get("macro_session") == session_name or t.get("session") == session_name:
                     count += 1
+                    continue
+                # Fallback v5.6: if field missing, check closed_at_sgt against session hours
+                _closed_str = t.get("closed_at_sgt") or t.get("timestamp_sgt") or ""
+                if len(_closed_str) >= 13:
+                    try:
+                        _h = int(_closed_str[11:13])
+                        if session_name == "US":
+                            # US spans 21:00–00:59 (crosses midnight)
+                            if _h >= 21 or _h == 0:
+                                count += 1
+                        else:
+                            if s_start <= _h <= s_end:
+                                count += 1
+                    except (ValueError, IndexError):
+                        pass
     return count
 
 
@@ -1310,6 +1337,14 @@ def _guard_phase(db, run_id, settings, alert, trader, history, now_sgt, today, d
     # ── Daily caps ─────────────────────────────────────────────────────────────
     daily_pnl, daily_trades, daily_losses, daily_wins = daily_totals(history, today, trader=trader)
     max_losses = int(settings.get("max_losing_trades_day", 3))
+    # v5.6: log counters every cycle so loss cap state is always visible in logs
+    log.info(
+        "Daily caps | losses=%d/%d wins=%d/%d trades=%d pnl=%.2f today=%s",
+        daily_losses, max_losses,
+        daily_wins, int(settings.get("max_wins_day", 1)),
+        daily_trades, daily_pnl, today,
+        extra={"run_id": run_id},
+    )
     if daily_losses >= max_losses:
         day_start_h = int(settings.get("trading_day_start_hour_sgt", 8))
         day_end_h   = 23  # US session hard cutoff
@@ -1608,6 +1643,12 @@ def _signal_phase(db, run_id, settings, alert, trader, history, now_sgt, today, 
         if _last_sl:
             _sl_closed_str = _last_sl.get("closed_at_sgt") or _last_sl.get("timestamp_sgt") or ""
             _sl_closed_dt  = _parse_sgt_timestamp(_sl_closed_str)
+            # v5.6 FIX: if closed_at_sgt is missing entirely, treat the entry timestamp
+            # as the close time. This is conservative but safe — a trade with no close
+            # timestamp that shows a realized loss should still trigger the cooldown.
+            if not _sl_closed_dt:
+                _entry_str = _last_sl.get("timestamp_sgt") or ""
+                _sl_closed_dt = _parse_sgt_timestamp(_entry_str)
             if _sl_closed_dt:
                 _sl_gap_min = (now_sgt - _sl_closed_dt).total_seconds() / 60
                 if _sl_gap_min < _global_sl_cooldown:
