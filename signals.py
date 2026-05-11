@@ -167,8 +167,9 @@ class SignalEngine:
         # ── H1 trend filter (v5.0) ─────────────────────────────────────────
         # Fetch H1 candles to determine macro bias.
         # Only used when h1_trend_filter_enabled = True in settings.
-        h1_trend_bullish = None   # None = filter disabled or insufficient data
+        h1_trend_bullish = None   # None = filter disabled or data unavailable
         _h1_filter = bool((settings or {}).get("h1_trend_filter_enabled", True))
+        _h1_data_failed = False
         if _h1_filter:
             _h1_period = int((settings or {}).get("h1_ema_period", 21))
             h1_closes, _, _ = self._fetch_candles(instrument, "H1", _h1_period + 5)
@@ -176,6 +177,16 @@ class SignalEngine:
                 _h1_ema = sum(h1_closes[-_h1_period:]) / _h1_period
                 _h1_price = h1_closes[-1]
                 h1_trend_bullish = _h1_price > _h1_ema
+            else:
+                # v5.6 FAIL-SAFE: candle data empty or insufficient — mark as failed.
+                # The filter check below will BLOCK the trade rather than pass it through.
+                # This prevents the "5 sells into a 131-point rally" scenario where
+                # API timeouts silently disabled the trend filter.
+                _h1_data_failed = True
+                log.warning(
+                    "H1 trend filter: candle fetch returned %d/%d candles — blocking trade (fail-safe)",
+                    len(h1_closes), _h1_period,
+                )
         levels["h1_trend_bullish"] = h1_trend_bullish
 
         # ── H4 trend filter (v5.3 FIXED) ─────────────────────────────────
@@ -185,8 +196,9 @@ class SignalEngine:
         # the H4 EMA (not just marginally crossing) to avoid flip-flopping on
         # consolidation days. This is the main reason Apr 12-13 SELL signals were
         # not blocked: price was hovering just above the H4 EMA21.
-        h4_trend_bullish = None   # None = filter disabled or insufficient data
+        h4_trend_bullish = None   # None = filter disabled or data unavailable
         _h4_filter = bool((settings or {}).get("h4_trend_filter_enabled", True))
+        _h4_data_failed = False
         if _h4_filter:
             _h4_period = int((settings or {}).get("h4_ema_period", 21))
             _h4_buffer_pct = float((settings or {}).get("h4_ema_buffer_pct", 0.15))
@@ -206,6 +218,13 @@ class SignalEngine:
                     _h4_price, _h4_period, _h4_ema, _h4_diff_pct, _h4_buffer_pct,
                     "BULLISH" if h4_trend_bullish is True else
                     ("BEARISH" if h4_trend_bullish is False else "NEUTRAL/buffer"),
+                )
+            else:
+                # v5.6 FAIL-SAFE: candle data empty — mark failed, block below.
+                _h4_data_failed = True
+                log.warning(
+                    "H4 trend filter: candle fetch returned %d/%d candles — blocking trade (fail-safe)",
+                    len(h4_closes), _h4_period,
                 )
         levels["h4_trend_bullish"] = h4_trend_bullish
 
@@ -272,10 +291,18 @@ class SignalEngine:
             )
             return 0, "NONE", " | ".join(reasons), levels, 0
 
-        # ── 1b. H1 trend filter (v5.0) ────────────────────────────────────
+        # ── 1b. H1 trend filter (v5.0 / v5.6 fail-safe) ─────────────────
         # Block trades that go against the H1 EMA trend.
         # BUY blocked if H1 price < H1 EMA21 (bearish trend).
         # SELL blocked if H1 price > H1 EMA21 (bullish trend).
+        # v5.6: if candle fetch failed (API timeout/rate-limit), block ALL trades
+        # instead of silently passing them through. Prevents the May 5 scenario
+        # where 5 consecutive SELLs were placed into a 131-pt gold rally because
+        # the H1 data returned empty and h1_trend_bullish stayed None.
+        if _h1_data_failed:
+            reasons.append("❌ H1 trend data unavailable — trade blocked (fail-safe)")
+            log.warning("H1 trend filter: blocking %s — candle data failed to load", direction)
+            return 0, "NONE", " | ".join(reasons), levels, 0
         if h1_trend_bullish is not None:
             if direction == "BUY" and not h1_trend_bullish:
                 reasons.append("❌ H1 trend bearish — BUY blocked by trend filter")
@@ -289,10 +316,13 @@ class SignalEngine:
                 trend_label = "bullish" if h1_trend_bullish else "bearish"
                 reasons.append(f"✅ H1 trend {trend_label} — aligns with {direction}")
 
-        # ── 1c. H4 trend filter (v5.3) ────────────────────────────────────
+        # ── 1c. H4 trend filter (v5.3 / v5.6 fail-safe) ─────────────────
         # Macro hard block — H4 EMA21 must agree with trade direction.
-        # This catches multi-day bull/bear runs that H1 alone can miss
-        # during intraday pullbacks (e.g. Apr 12–13 gold surge).
+        # v5.6: same fail-safe as H1 — block if data unavailable.
+        if _h4_data_failed:
+            reasons.append("❌ H4 trend data unavailable — trade blocked (fail-safe)")
+            log.warning("H4 trend filter: blocking %s — candle data failed to load", direction)
+            return 0, "NONE", " | ".join(reasons), levels, 0
         if h4_trend_bullish is not None:
             if direction == "BUY" and not h4_trend_bullish:
                 reasons.append("❌ H4 trend bearish — BUY blocked by H4 macro filter")
